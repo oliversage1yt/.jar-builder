@@ -1,0 +1,14 @@
+{
+  "placement": {
+    "type": "minecraft:random_spread",
+    "spacing": 40,
+    "separation": 22,
+    "salt": 493344522
+  },
+  "structures": [
+    {
+      "structure": "sky_islands:skyarenadesert",
+      "weight": 1
+    }
+  ]
+}

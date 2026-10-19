@@ -1,0 +1,14 @@
+{
+  "placement": {
+    "type": "minecraft:random_spread",
+    "salt": 1171198949,
+    "spacing": 30,
+    "separation": 12
+  },
+  "structures": [
+    {
+      "structure": "sky_islands:lavic_railway",
+      "weight": 3
+    }
+  ]
+}

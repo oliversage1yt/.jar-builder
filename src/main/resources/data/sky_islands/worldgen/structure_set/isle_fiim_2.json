@@ -1,0 +1,14 @@
+{
+  "placement": {
+    "type": "minecraft:random_spread",
+    "salt": 35356302,
+    "spacing": 14,
+    "separation": 4
+  },
+  "structures": [
+    {
+      "structure": "sky_islands:isle_fiim_2",
+      "weight": 1
+    }
+  ]
+}

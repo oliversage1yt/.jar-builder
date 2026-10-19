@@ -1,0 +1,14 @@
+{
+  "placement": {
+    "type": "minecraft:random_spread",
+    "salt": 255055416,
+    "spacing": 8,
+    "separation": 2
+  },
+  "structures": [
+    {
+      "structure": "sky_islands:isle_film_0",
+      "weight": 1
+    }
+  ]
+}

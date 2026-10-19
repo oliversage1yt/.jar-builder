@@ -1,0 +1,14 @@
+{
+  "placement": {
+    "type": "minecraft:random_spread",
+    "spacing": 35,
+    "separation": 30,
+    "salt": 465212121
+  },
+  "structures": [
+    {
+      "structure": "sky_islands:golden_floating_dungeon",
+      "weight": 1
+    }
+  ]
+}

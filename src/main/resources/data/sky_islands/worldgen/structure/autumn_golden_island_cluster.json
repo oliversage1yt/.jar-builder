@@ -1,0 +1,20 @@
+{
+  "type": "minecraft:jigsaw",
+  "biomes": "#sky_islands:autumn",
+  "step": "top_layer_modification",
+  "start_pool": "sky_islands:autumn/island_cluster",
+  "size": 6,
+  "start_height": {
+    "type": "minecraft:trapezoid",
+    "min_inclusive": {
+      "absolute": 230
+    },
+    "max_inclusive": {
+      "absolute": 420
+    }
+  },
+  "max_distance_from_center": 115,
+  "use_expansion_hack": false,
+  "spawn_overrides": {},
+  "terrain_adaptation": "none"
+}
