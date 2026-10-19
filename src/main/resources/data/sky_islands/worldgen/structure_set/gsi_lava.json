@@ -1,0 +1,14 @@
+{
+  "placement": {
+    "type": "minecraft:random_spread",
+    "salt": 1361998249,
+    "spacing": 26,
+    "separation": 18
+  },
+  "structures": [
+    {
+      "structure": "sky_islands:lavic_great_sky_island",
+      "weight": 3
+    }
+  ]
+}

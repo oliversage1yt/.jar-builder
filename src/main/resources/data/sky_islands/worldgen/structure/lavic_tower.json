@@ -1,0 +1,20 @@
+{
+  "type": "minecraft:jigsaw",
+  "biomes": "#sky_islands:lavic",
+  "step": "surface_structures",
+  "start_pool": "sky_islands:lava_tower_start",
+  "size": 7,
+  "start_height": {
+    "type": "minecraft:trapezoid",
+    "min_inclusive": {
+      "absolute": 270
+    },
+    "max_inclusive": {
+      "absolute": 400
+    }
+  },
+  "max_distance_from_center": 70,
+  "use_expansion_hack": false,
+  "spawn_overrides": {},
+  "terrain_adaptation": "none"
+}

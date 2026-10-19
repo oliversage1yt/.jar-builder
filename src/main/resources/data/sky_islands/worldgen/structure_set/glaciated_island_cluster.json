@@ -1,0 +1,14 @@
+{
+  "placement": {
+    "type": "minecraft:random_spread",
+    "spacing": 22,
+    "separation": 18,
+    "salt": 4931485919
+  },
+  "structures": [
+    {
+      "structure": "sky_islands:glaciated_island_cluster",
+      "weight": 1
+    }
+  ]
+}

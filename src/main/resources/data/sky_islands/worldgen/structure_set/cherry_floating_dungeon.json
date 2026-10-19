@@ -1,0 +1,14 @@
+{
+  "placement": {
+    "type": "minecraft:random_spread",
+    "spacing": 35,
+    "separation": 30,
+    "salt": 464213121
+  },
+  "structures": [
+    {
+      "structure": "sky_islands:cherry_floating_dungeon",
+      "weight": 1
+    }
+  ]
+}

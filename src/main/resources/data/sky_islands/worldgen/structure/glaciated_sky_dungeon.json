@@ -1,0 +1,20 @@
+{
+  "type": "minecraft:jigsaw",
+  "biomes": "#sky_islands:glaciated",
+  "step": "surface_structures",
+  "start_pool": "sky_islands:ice_dung",
+  "size": 7,
+  "start_height": {
+    "type": "minecraft:trapezoid",
+    "min_inclusive": {
+      "absolute": 250
+    },
+    "max_inclusive": {
+      "absolute": 380
+    }
+  },
+  "max_distance_from_center": 70,
+  "use_expansion_hack": false,
+  "spawn_overrides": {},
+  "terrain_adaptation": "none"
+}

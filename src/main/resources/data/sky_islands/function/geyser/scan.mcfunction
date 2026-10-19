@@ -1,0 +1,15 @@
+# Geyser = crying obsidian with potent sulfur 2 blocks above it, somewhere 3-16 blocks below (and within 1 block sideways of) you
+execute if entity @s[tag=!si_launched] positioned ~ ~-3 ~ if block ~ ~ ~ minecraft:crying_obsidian if block ~ ~2 ~ minecraft:potent_sulfur run function sky_islands:geyser/launch
+execute if entity @s[tag=!si_launched] positioned ~ ~-4 ~ if block ~ ~ ~ minecraft:crying_obsidian if block ~ ~2 ~ minecraft:potent_sulfur run function sky_islands:geyser/launch
+execute if entity @s[tag=!si_launched] positioned ~ ~-5 ~ if block ~ ~ ~ minecraft:crying_obsidian if block ~ ~2 ~ minecraft:potent_sulfur run function sky_islands:geyser/launch
+execute if entity @s[tag=!si_launched] positioned ~ ~-6 ~ if block ~ ~ ~ minecraft:crying_obsidian if block ~ ~2 ~ minecraft:potent_sulfur run function sky_islands:geyser/launch
+execute if entity @s[tag=!si_launched] positioned ~ ~-7 ~ if block ~ ~ ~ minecraft:crying_obsidian if block ~ ~2 ~ minecraft:potent_sulfur run function sky_islands:geyser/launch
+execute if entity @s[tag=!si_launched] positioned ~ ~-8 ~ if block ~ ~ ~ minecraft:crying_obsidian if block ~ ~2 ~ minecraft:potent_sulfur run function sky_islands:geyser/launch
+execute if entity @s[tag=!si_launched] positioned ~ ~-9 ~ if block ~ ~ ~ minecraft:crying_obsidian if block ~ ~2 ~ minecraft:potent_sulfur run function sky_islands:geyser/launch
+execute if entity @s[tag=!si_launched] positioned ~ ~-10 ~ if block ~ ~ ~ minecraft:crying_obsidian if block ~ ~2 ~ minecraft:potent_sulfur run function sky_islands:geyser/launch
+execute if entity @s[tag=!si_launched] positioned ~ ~-11 ~ if block ~ ~ ~ minecraft:crying_obsidian if block ~ ~2 ~ minecraft:potent_sulfur run function sky_islands:geyser/launch
+execute if entity @s[tag=!si_launched] positioned ~ ~-12 ~ if block ~ ~ ~ minecraft:crying_obsidian if block ~ ~2 ~ minecraft:potent_sulfur run function sky_islands:geyser/launch
+execute if entity @s[tag=!si_launched] positioned ~ ~-13 ~ if block ~ ~ ~ minecraft:crying_obsidian if block ~ ~2 ~ minecraft:potent_sulfur run function sky_islands:geyser/launch
+execute if entity @s[tag=!si_launched] positioned ~ ~-14 ~ if block ~ ~ ~ minecraft:crying_obsidian if block ~ ~2 ~ minecraft:potent_sulfur run function sky_islands:geyser/launch
+execute if entity @s[tag=!si_launched] positioned ~ ~-15 ~ if block ~ ~ ~ minecraft:crying_obsidian if block ~ ~2 ~ minecraft:potent_sulfur run function sky_islands:geyser/launch
+execute if entity @s[tag=!si_launched] positioned ~ ~-16 ~ if block ~ ~ ~ minecraft:crying_obsidian if block ~ ~2 ~ minecraft:potent_sulfur run function sky_islands:geyser/launch

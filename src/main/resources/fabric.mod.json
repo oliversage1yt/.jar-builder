@@ -1,0 +1,31 @@
+{
+	"schemaVersion": 1,
+	"id": "sky_islands",
+	"version": "${version}",
+	"name": "Sky Islands {Islands}",
+	"description": "Floating sky islands, archipelagos, towers and ruins high above the overworld, with surface geyser launchers, fading island music, sprite clouds, and orange autumn grass. Uses only vanilla blocks, items and entities.",
+	"authors": [
+		"Port of Sky Lands by DeepCanionStudio"
+	],
+	"contact": {},
+	"license": "MIT",
+	"icon": "assets/sky_islands/icon.png",
+	"environment": "*",
+	"entrypoints": {
+		"main": [
+			"com.skyislands.SkyIslands"
+		],
+		"client": [
+			"com.skyislands.client.SkyIslandsClient"
+		]
+	},
+	"mixins": [
+		"sky_islands.mixins.json"
+	],
+	"depends": {
+		"fabricloader": ">=0.19.5",
+		"minecraft": "~26.3",
+		"java": ">=25",
+		"fabric-api": "*"
+	}
+}
