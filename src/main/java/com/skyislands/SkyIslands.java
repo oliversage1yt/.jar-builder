@@ -2,6 +2,8 @@ package com.skyislands;
 
 import net.fabricmc.api.ModInitializer;
 import net.fabricmc.fabric.api.event.lifecycle.v1.ServerChunkEvents;
+import net.fabricmc.fabric.api.event.lifecycle.v1.ServerLifecycleEvents;
+import net.fabricmc.fabric.api.event.lifecycle.v1.ServerTickEvents;
 
 import net.minecraft.resources.Identifier;
 
@@ -19,6 +21,8 @@ public class SkyIslands implements ModInitializer {
 	@Override
 	public void onInitialize() {
 		ServerChunkEvents.CHUNK_GENERATE.register(GroundFreezer::onGenerate);
+		ServerTickEvents.END_SERVER_TICK.register(GroundFreezer::tick);
+		ServerLifecycleEvents.SERVER_STOPPED.register(server -> GroundFreezer.clear());
 		LOGGER.info("Sky Islands {Islands} loaded.");
 	}
 

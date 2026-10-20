@@ -1,14 +1,18 @@
 package com.skyislands;
 
 import java.lang.reflect.Method;
+import java.util.Queue;
+import java.util.concurrent.ConcurrentLinkedQueue;
 
 import net.minecraft.core.BlockPos;
+import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerChunkCache;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.world.level.biome.Biome;
 import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.block.state.properties.BlockStateProperties;
+import net.minecraft.world.level.ChunkPos;
 import net.minecraft.world.level.chunk.LevelChunk;
 import net.minecraft.world.level.levelgen.Heightmap;
 
@@ -25,6 +29,26 @@ public final class GroundFreezer {
 	/** Highest block must be this far above the terrain before we treat the column as "island above" (tall trees stay below). */
 	private static final int MIN_GAP = 40;
 
+	/** Chunks processed per server tick (keeps world generation smooth). */
+	private static final int PER_TICK = 4;
+
+	/**
+	 * IMPORTANT: Fabric fires CHUNK_GENERATE from inside the chunk's own generation task, when the chunk is not yet visible
+	 * to the world. Reading or writing blocks through the level at that moment asks for the very chunk being generated and
+	 * deadlocks. So the event only queues the chunk; the work happens later, on the server tick.
+	 */
+	private static final Queue<Pending> QUEUE = new ConcurrentLinkedQueue<>();
+
+	private static final class Pending {
+		final ServerLevel level;
+		final ChunkPos pos;
+
+		Pending(ServerLevel level, ChunkPos pos) {
+			this.level = level;
+			this.pos = pos;
+		}
+	}
+
 	private static boolean disabled;
 	private static Method coldEnoughToSnow;
 	private static boolean coldHasSeaLevel;
@@ -32,17 +56,44 @@ public final class GroundFreezer {
 
 	private GroundFreezer() { }
 
+	/** CHUNK_GENERATE callback: only remembers the chunk. */
 	public static void onGenerate(ServerLevel level, LevelChunk chunk) {
+		if (!disabled) {
+			QUEUE.add(new Pending(level, chunk.getPos()));
+		}
+	}
+
+	/** END_SERVER_TICK callback: freezes a few queued chunks. */
+	public static void tick(MinecraftServer server) {
 		if (disabled) {
+			QUEUE.clear();
 			return;
 		}
 
-		try {
-			freeze(level, chunk);
-		} catch (Throwable t) {
-			disabled = true;
-			SkyIslands.LOGGER.error("Sky Islands ground freezing failed and was disabled for this session", t);
+		for (int i = 0; i < PER_TICK; i++) {
+			Pending next = QUEUE.poll();
+
+			if (next == null) {
+				return;
+			}
+
+			try {
+				BlockPos corner = new BlockPos(next.pos.getMinBlockX(), 64, next.pos.getMinBlockZ());
+
+				if (next.level.hasChunkAt(corner)) {
+					freeze(next.level, next.level.getChunkAt(corner));
+				}
+			} catch (Throwable t) {
+				disabled = true;
+				SkyIslands.LOGGER.error("Sky Islands ground freezing failed and was disabled for this session", t);
+				QUEUE.clear();
+				return;
+			}
 		}
+	}
+
+	public static void clear() {
+		QUEUE.clear();
 	}
 
 	private static void freeze(ServerLevel level, LevelChunk chunk) {
