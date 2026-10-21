@@ -38,10 +38,15 @@ public final class GoldenFoliageTint {
 	private static final ColorResolver GOLDEN_RESOLVER = (biome, x, z) ->
 			isGoldenBiome(biome) ? GOLD : BiomeColors.FOLIAGE_COLOR_RESOLVER.getColor(biome, x, z);
 
+	/** Same idea for grass, grass blocks and ferns, which use the grass colour instead of the foliage colour. */
+	private static final ColorResolver GOLDEN_GRASS_RESOLVER = (biome, x, z) ->
+			isGoldenBiome(biome) ? GOLD : BiomeColors.GRASS_COLOR_RESOLVER.getColor(biome, x, z);
+
 	private GoldenFoliageTint() { }
 
 	public static void register() {
 		ColorResolverRegistry.register(GOLDEN_RESOLVER);
+		ColorResolverRegistry.register(GOLDEN_GRASS_RESOLVER);
 
 		BlockTintSource source = new BlockTintSource() {
 			@Override
@@ -62,16 +67,35 @@ public final class GoldenFoliageTint {
 		BlockColorRegistry.register(List.of(source), Blocks.OAK_LEAVES, Blocks.JUNGLE_LEAVES, Blocks.ACACIA_LEAVES, Blocks.DARK_OAK_LEAVES, Blocks.MANGROVE_LEAVES, Blocks.VINE);
 	}
 
+	/**
+	 * Grass colour for grass blocks, grass and ferns: gold on golden islands, otherwise the normal biome grass colour.
+	 * Used by {@link AutumnGrassTint}, which owns the grass-type blocks.
+	 */
+	public static int grassColor(BlockAndTintGetter level, BlockPos pos) {
+		if (ClientConfig.goldenFoliage && pos.getY() >= ClientConfig.goldenFoliageMinY) {
+			return level.getBlockTint(pos, GOLDEN_GRASS_RESOLVER);
+		}
+
+		return level.getBlockTint(pos, BiomeColors.GRASS_COLOR_RESOLVER);
+	}
+
 	private static boolean isGoldenBiome(Biome biome) {
-		return CACHE.computeIfAbsent(biome, b -> {
-			var level = Minecraft.getInstance().level;
+		Boolean cached = CACHE.get(biome);
 
-			if (level == null) {
-				return false;
-			}
+		if (cached != null) {
+			return cached;
+		}
 
-			var key = level.registryAccess().lookupOrThrow(Registries.BIOME).getKey(b);
-			return key != null && GOLDEN_BIOMES.contains(key.getPath());
-		});
+		var level = Minecraft.getInstance().level;
+
+		if (level == null) {
+			// Don't cache a guess made while no world is loaded.
+			return false;
+		}
+
+		var key = level.registryAccess().lookupOrThrow(Registries.BIOME).getKey(biome);
+		boolean golden = key != null && GOLDEN_BIOMES.contains(key.getPath());
+		CACHE.put(biome, golden);
+		return golden;
 	}
 }

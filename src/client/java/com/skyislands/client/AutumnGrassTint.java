@@ -6,7 +6,6 @@ import java.util.concurrent.ConcurrentHashMap;
 import net.fabricmc.fabric.api.client.rendering.v1.BlockColorRegistry;
 
 import net.minecraft.client.color.block.BlockTintSource;
-import net.minecraft.client.renderer.BiomeColors;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.client.renderer.block.BlockAndTintGetter;
@@ -17,7 +16,7 @@ import net.minecraft.world.level.block.state.BlockState;
 /**
  * Makes grass on the autumn (poplar) islands the dappled forest's orange, whatever biome the island floats over.
  * A grass block counts as "autumn" when it is high up and there is an autumn block nearby (poplar, fallen leaves, red shrubs, red sand, roses); everywhere else the
- * normal biome grass colour is used, so ground-level grass is untouched.
+ * golden-island or normal biome grass colour is used (see {@link GoldenFoliageTint}), so ground-level grass is untouched.
  */
 public final class AutumnGrassTint {
 	/** Dappled forest grass colour (#df6827). */
@@ -46,7 +45,8 @@ public final class AutumnGrassTint {
 					return ORANGE;
 				}
 
-				return level.getBlockTint(pos, BiomeColors.GRASS_COLOR_RESOLVER);
+				// Not an autumn island: golden islands get gold grass to match their leaves, everything else is vanilla.
+				return GoldenFoliageTint.grassColor(level, pos);
 			}
 		};
 
