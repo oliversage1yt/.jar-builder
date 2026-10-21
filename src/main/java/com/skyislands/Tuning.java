@@ -17,4 +17,13 @@ public final class Tuning {
 
 	/** The altitude temperature is clamped to when the snow fix applies (vanilla's own cut-off is 80). */
 	public static final int SNOW_FIX_CLAMP_Y = 80;
+
+	/** Islands never float lower than this, so anything below is ordinary ground. */
+	public static final int ISLAND_MIN_Y = 110;
+	/** A column counts as "island above ground" when an air gap at least this tall separates them. */
+	public static final int ISLAND_GAP = 24;
+	/** Naturally generated falling blocks that drop below this height (leaving the island band) vanish. */
+	public static final int ISLAND_CUTOFF_Y = 108;
+	/** A map first used at or above this height becomes a "sky map" that shows the islands. */
+	public static final int SKY_MAP_MIN_Y = 140;
 }

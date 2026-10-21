@@ -23,7 +23,7 @@ A port of *Sky Lands* (DeepCanionStudio, MIT) that uses **only vanilla blocks, i
      git push -u origin main
      ```
 3. Open the repo's **Actions** tab. The `build` workflow (`.github/workflows/build.yml`) starts by itself on every push (about 2-4 minutes). It installs Gradle itself, so it works even if the Gradle wrapper jar did not upload.
-4. When it is green, open the run, scroll to **Artifacts**, and download `Artifacts`. Inside is `sky-islands-2.1.1.jar`
+4. When it is green, open the run, scroll to **Artifacts**, and download `Artifacts`. Inside is `sky-islands-2.2.0.jar`
    (ignore the `-sources` jar). Put that jar in your `mods` folder next to Fabric API.
 
 If the build is **red**, open the failed step, copy the first 20 or so lines containing `error:` and send them over;
@@ -40,6 +40,10 @@ each one points to an exact file and line.
 | **No snow on islands in mild biomes** | `BiomeAltitudeMixin`: above y=165 the temperature used for snow/ice ignores altitude. Biomes that are freezing at sea level (snowy plains, frozen ocean, snowy taiga...) still snow, so glaciated islands keep their snow. |
 | **Fading music** | `MusicController` (client). Skyborn starts when a geyser launches you and fades out when you land. Sky tracks fade in above y=200 and fade out below y=185, with a gap between tracks and never the same track twice in a row. Vanilla music fades out as ours fades in, and stays silent meanwhile. |
 | **Clouds** | `CloudSpawner` + `CloudParticle` (client). A port of the original mod's method: huge camera-facing translucent particles spawned in bursts near you, drifting, fading in and out. |
+| **Sky light through islands** | `ChunkSkyLightSourcesMixin`: the sky-light "lowest source" height of a column that has an island above a big air gap is found under the island, so the ground below is no longer in shadow. Built from the real 26.3 light engine source. Trade-off: the inside of island buildings counts as open sky and is fully lit. Existing chunks keep their old light until they are relit. |
+| **Maps** | `MapItemMixin`: a map remembers (in its custom_data) whether it was first used in the sky. Maps made below the islands ignore them and show the ground; sky maps show only the islands and solid sky blue elsewhere. |
+| **Falling blocks and fluids** | `FallingBlockEntityMixin`, `FlowingFluidMixin`: sand/gravel that falls off a generated island vanishes below the island band, and island water/lava cannot flow out of the island. "Generated" means inside the island's structure area, so blocks a player adds *inside* an island are treated as part of it; anything placed in open sky behaves normally. |
+| **Golden foliage** | `GoldenFoliageTint` (client): leaves on islands over plains, forests, taiga, rivers and cooler oceans are golden yellow. Jungles, swamps, warm oceans, deserts and snowy biomes keep their own colours. Those islands also have gold ore instead of emerald ore (data). |
 | **Orange grass** | `AutumnGrassTint` (client). Grass high up and near any autumn block (poplar, fallen leaves, red shrubs, red sand, roses) is tinted dappled-forest orange (`#df6827`), whatever biome the island floats over. |
 
 ## Settings (no rebuild needed)
@@ -50,19 +54,12 @@ On first launch the game writes `config/sky_islands.properties`. Edit it with th
   `launchFadeInTicks`, `launchFadeOutTicks` (20 ticks = 1 second)
 * `cloudsEnabled`, `cloudSpawnChance` (lower = fewer clouds, faster game), `cloudsPerBurst`, `cloudSpread`,
   `cloudBaseY`, `cloudHeightVariation`
-* `orangeGrass`, `orangeGrassMinY`
+* `orangeGrass`, `orangeGrassMinY`, `goldenFoliage`, `goldenFoliageMinY`
+* `lightThroughIslands`, `skyMaps`, `naturalFallingBlocksVanish`, `naturalFluidsContained` (server side; turn any off to get vanilla behaviour back)
 
 The music files are `src/client/resources/assets/sky_islands/sounds/music/*.ogg`. To swap a track, replace the file
 with another **Ogg Vorbis** file of the same name (Opus-in-Ogg will not play) and rebuild. Track names are listed in
 `MusicController.java` and `sounds.json`.
-
-## Not included yet: shadows under islands, and islands on maps
-
-The dark patches under islands come from Minecraft's sky-light engine, which treats islands like roofs. Fixing that
-means changing the light engine's internals, and I would not write that without seeing the real 26.3 source. Use the
-**decompile-minecraft** workflow (Actions tab > *Run workflow*) to download the decompiled source as an artifact,
-then send the relevant light-engine files and the fix can be written against the real code. (The decompile artifact contains two jars; the *common* one holds the light engine and map code, the *clientOnly* one does not.) Meanwhile the data pack
-raises the overworld's minimum brightness a little (`ambient_light_color` in `dimension_type/overworld.json`).
 
 ## Spots most likely to need a tweak (written without being able to compile)
 
@@ -73,6 +70,7 @@ If the build fails, the likely candidates are small name differences in:
 * `CloudParticle`: `scale`, `setSize`, `setLifetime`, `setAlpha`, and the fields `friction`, `gravity`, `hasPhysics`, `xd/yd/zd`.
 * `AutumnGrassTint`: `Blocks.SHORT_GRASS`, `BlockAndTintGetter.getBlockState`.
 * `MusicController`: `player.getAttributeValue(Attributes.GRAVITY)`, `SoundManager.isActive/play`.
+* `MapItemMixin` / `ChunkSkyLightSourcesMixin` / `FallingBlockEntityMixin` / `FlowingFluidMixin`: written against the real 26.3 source (signatures checked), but not run. If one fails to apply, the log says `Mixin apply failed`; the rest of the mod still works.
 * `GroundFreezer`: `ServerChunkCache.getGenerator()/randomState()`, `ChunkGenerator.getBaseHeight(...)`, `ServerLevel.getBiome`.
 
 The `BiomeAltitudeMixin`, `VanillaMusic` and the biome-temperature lookup in `GroundFreezer` are written so that a wrong name cannot break the game: they just log a

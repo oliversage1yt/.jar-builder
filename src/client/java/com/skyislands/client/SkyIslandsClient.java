@@ -11,12 +11,13 @@ public class SkyIslandsClient implements ClientModInitializer {
 		ClientConfig.load();
 		CloudSetup.register();
 		AutumnGrassTint.register();
+		GoldenFoliageTint.register();
 
 		ClientTickEvents.END_CLIENT_TICK.register(client -> {
 			MusicController.tick(client);
 			CloudSpawner.tick(client);
 		});
 
-		SkyIslands.LOGGER.info("Sky Islands client features ready (music fades, clouds, orange grass).");
+		SkyIslands.LOGGER.info("Sky Islands client features ready (music fades, clouds, orange grass, golden foliage).");
 	}
 }

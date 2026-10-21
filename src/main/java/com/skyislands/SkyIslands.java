@@ -20,9 +20,13 @@ public class SkyIslands implements ModInitializer {
 
 	@Override
 	public void onInitialize() {
+		CommonConfig.load();
 		ServerChunkEvents.CHUNK_GENERATE.register(GroundFreezer::onGenerate);
 		ServerTickEvents.END_SERVER_TICK.register(GroundFreezer::tick);
-		ServerLifecycleEvents.SERVER_STOPPED.register(server -> GroundFreezer.clear());
+		ServerLifecycleEvents.SERVER_STOPPED.register(server -> {
+			GroundFreezer.clear();
+			com.skyislands.world.IslandColumns.clear();
+		});
 		LOGGER.info("Sky Islands {Islands} loaded.");
 	}
 

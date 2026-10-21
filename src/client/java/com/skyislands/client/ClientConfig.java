@@ -38,6 +38,10 @@ public final class ClientConfig {
 	public static double cloudBaseY = 260;
 	public static double cloudHeightVariation = 120;
 
+	// ---- golden foliage on islands over temperate biomes
+	public static boolean goldenFoliage = true;
+	public static int goldenFoliageMinY = 120;
+
 	// ---- orange grass on the autumn (poplar) islands
 	public static boolean orangeGrass = true;
 	public static int orangeGrassMinY = 150;
@@ -70,9 +74,11 @@ public final class ClientConfig {
 		cloudHeightVariation = dbl(p, "cloudHeightVariation", cloudHeightVariation);
 		orangeGrass = bool(p, "orangeGrass", orangeGrass);
 		orangeGrassMinY = integer(p, "orangeGrassMinY", orangeGrassMinY);
+		goldenFoliage = bool(p, "goldenFoliage", goldenFoliage);
+		goldenFoliageMinY = integer(p, "goldenFoliageMinY", goldenFoliageMinY);
 
 		// write the file back (adds any new keys, keeps the file self-documenting)
-		Properties out = new Properties();
+		Properties out = p;
 		out.setProperty("musicEnabled", String.valueOf(musicEnabled));
 		out.setProperty("skyMusicEnterY", String.valueOf(skyMusicEnterY));
 		out.setProperty("skyMusicExitY", String.valueOf(skyMusicExitY));
@@ -89,6 +95,8 @@ public final class ClientConfig {
 		out.setProperty("cloudHeightVariation", String.valueOf(cloudHeightVariation));
 		out.setProperty("orangeGrass", String.valueOf(orangeGrass));
 		out.setProperty("orangeGrassMinY", String.valueOf(orangeGrassMinY));
+		out.setProperty("goldenFoliage", String.valueOf(goldenFoliage));
+		out.setProperty("goldenFoliageMinY", String.valueOf(goldenFoliageMinY));
 
 		try (OutputStream os = Files.newOutputStream(file)) {
 			out.store(os, "Sky Islands {Islands} client settings. 20 ticks = 1 second. Delete a line to restore its default.");

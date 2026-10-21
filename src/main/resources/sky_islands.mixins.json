@@ -3,7 +3,11 @@
 	"package": "com.skyislands.mixin",
 	"compatibilityLevel": "JAVA_25",
 	"mixins": [
-		"BiomeAltitudeMixin"
+		"BiomeAltitudeMixin",
+		"ChunkSkyLightSourcesMixin",
+		"MapItemMixin",
+		"FallingBlockEntityMixin",
+		"FlowingFluidMixin"
 	],
 	"injectors": {
 		"defaultRequire": 0
