@@ -6,7 +6,8 @@
 		"BiomeAltitudeMixin",
 		"ChunkSkyLightSourcesMixin",
 		"MapItemMixin",
-		"FlowingFluidMixin"
+		"FlowingFluidMixin",
+		"IllusionerAxePoseMixin"
 	],
 	"injectors": {
 		"defaultRequire": 0

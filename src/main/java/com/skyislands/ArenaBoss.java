@@ -83,7 +83,16 @@ public final class ArenaBoss {
 	/** Axe phase: damage of one swing (a diamond axe), ticks between swings, reach (squared) and run speed. */
 	private static final float AXE_DAMAGE = 9.0F;
 	private static final int AXE_COOLDOWN_TICKS = 20;
-	private static final double AXE_REACH_SQR = 6.25;
+	/** How close (centre to centre, in blocks) the boss must be to land a swing: 1.5 blocks shorter than before (was 2.5). */
+	private static final double AXE_REACH = 1.0;
+	private static final double AXE_REACH_SQR = AXE_REACH * AXE_REACH;
+	/** Axe phase: after this long without a walkable path to the target (e.g. it pillared up) the boss shoots instead. */
+	private static final int UNREACHABLE_TICKS = 200;
+	/** Minimum ticks the boss keeps the bow before it may go back to the axe. */
+	private static final int SHOOT_MIN_TICKS = 40;
+	/** Bow cooldown of the Illusioner's bow goal: vanilla value, and the faster one used while the target is out of reach. */
+	private static final int BOW_INTERVAL_NORMAL = 20;
+	private static final int BOW_INTERVAL_FAST = 0;
 	private static final double AXE_RUN_SPEED = 0.675;
 
 	/** Chance that an axe swing at a blocking player disables their shield, and for how long. */
@@ -126,6 +135,11 @@ public final class ArenaBoss {
 		/** The Illusioner's mirror image spell goal while it is taken away during the axe phase. */
 		Object mirrorGoal;
 		int mirrorPriority;
+		/** Axe phase only: the target cannot be reached on foot, so the boss is shooting with a fast bow. */
+		boolean shooting;
+		int shootTicks;
+		int unreachableTicks;
+		boolean targetReachable = true;
 
 		Boss(Mob mob, ServerBossEvent bar, BlockPos home) {
 			this.mob = mob;
@@ -610,6 +624,11 @@ public final class ArenaBoss {
 		// No mirror image / vanishing spell while it charges with the axe.
 		setMirrorSpell(boss, phase != PHASE_AXE);
 
+		boss.shooting = false;
+		boss.unreachableTicks = 0;
+		boss.targetReachable = true;
+		setBowInterval(boss, BOW_INTERVAL_NORMAL);
+
 		if (phase == PHASE_AXE) {
 			setMainHand(level, mob, "minecraft:diamond_axe");
 		} else if (phase == PHASE_BOW) {
@@ -675,7 +694,60 @@ public final class ArenaBoss {
 		}
 	}
 
-	/** Axe phase: run at the target and swing the axe like a Vindicator. */
+	/**
+	 * Whether the boss can walk to the target. Done by reflection (PathNavigation.createPath / Path.canReach) so a
+	 * signature change cannot break the build; when the check is impossible the target counts as reachable.
+	 */
+	private static boolean isReachable(Mob mob, LivingEntity target) {
+		try {
+			Object navigation = mob.getNavigation();
+
+			for (Method m : navigation.getClass().getMethods()) {
+				Class<?>[] types = m.getParameterTypes();
+
+				if (m.getName().equals("createPath") && types.length == 2 && types[0].isAssignableFrom(target.getClass()) && types[1] == int.class) {
+					Object path = m.invoke(navigation, target, 0);
+
+					if (path == null) {
+						return false;
+					}
+
+					Method canReach = findMethod(path.getClass(), "canReach", 0);
+					return canReach == null || (Boolean) canReach.invoke(path);
+				}
+			}
+		} catch (ReflectiveOperationException | RuntimeException ignored) {
+			// fall through
+		}
+
+		return true;
+	}
+
+	/** Sets the cooldown of the Illusioner's bow goal (reflection, as with the mirror spell). */
+	private static void setBowInterval(Boss boss, int ticks) {
+		try {
+			Field field = Mob.class.getDeclaredField("goalSelector");
+			field.setAccessible(true);
+			Object selector = field.get(boss.mob);
+			Method getGoals = findMethod(selector.getClass(), "getAvailableGoals", 0);
+
+			for (Object wrapped : new ArrayList<>((java.util.Collection<?>) getGoals.invoke(selector))) {
+				Object goal = findMethod(wrapped.getClass(), "getGoal", 0).invoke(wrapped);
+
+				if (goal.getClass().getSimpleName().toLowerCase(Locale.ROOT).contains("bow")) {
+					Method set = findMethod(goal.getClass(), "setMinAttackInterval", 1);
+
+					if (set != null) {
+						set.invoke(goal, ticks);
+					}
+				}
+			}
+		} catch (ReflectiveOperationException | RuntimeException e) {
+			SkyIslands.LOGGER.warn("Sky Islands could not change the Illusioner's bow speed", e);
+		}
+	}
+
+	/** Axe phase: run at the target and swing the axe like a Vindicator; shoot instead while the target is out of reach. */
 	private static void tickAxe(ServerLevel level, Boss boss) {
 		Mob mob = boss.mob;
 		LivingEntity target = mob.getTarget();
@@ -690,9 +762,48 @@ public final class ArenaBoss {
 		}
 
 		if (target == null || !target.isAlive()) {
+			boss.unreachableTicks = 0;
+
+			if (!boss.shooting) {
+				mob.setAggressive(false);
+			}
+
 			return;
 		}
 
+		if (mob.tickCount % 10 == 0) {
+			boss.targetReachable = isReachable(mob, target);
+		}
+
+		if (boss.shooting) {
+			// The bow goal does the shooting. Back to the axe once the target can be reached again.
+			boss.shootTicks++;
+
+			if (boss.targetReachable && boss.shootTicks >= SHOOT_MIN_TICKS) {
+				boss.shooting = false;
+				boss.unreachableTicks = 0;
+				boss.axeCooldown = AXE_COOLDOWN_TICKS;
+				setBowInterval(boss, BOW_INTERVAL_NORMAL);
+				setMainHand(level, mob, "minecraft:diamond_axe");
+			}
+
+			return;
+		}
+
+		if (boss.targetReachable) {
+			boss.unreachableTicks = 0;
+		} else if (++boss.unreachableTicks >= UNREACHABLE_TICKS) {
+			boss.shooting = true;
+			boss.shootTicks = 0;
+			mob.getNavigation().stop();
+			setMainHand(level, mob, "minecraft:bow");
+			setBowInterval(boss, BOW_INTERVAL_FAST);
+			level.playSound(null, mob.blockPosition(), SoundEvents.EVOKER_PREPARE_ATTACK, SoundSource.HOSTILE, 1.5F, 1.2F);
+			return;
+		}
+
+		// Holding the axe counts as "aggressive", which is what makes the Illusioner's model show the item in its hand.
+		mob.setAggressive(true);
 		mob.getLookControl().setLookAt(target, 30.0F, 30.0F);
 
 		if (mob.tickCount % 4 == 0) {
