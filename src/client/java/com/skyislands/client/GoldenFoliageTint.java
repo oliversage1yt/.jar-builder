@@ -8,6 +8,7 @@ import net.fabricmc.fabric.api.client.rendering.v1.BlockColorRegistry;
 import net.fabricmc.fabric.api.client.rendering.v1.ColorResolverRegistry;
 
 import net.minecraft.client.Minecraft;
+import net.minecraft.client.multiplayer.ClientLevel;
 import net.minecraft.client.color.block.BlockTintSource;
 import net.minecraft.client.renderer.BiomeColors;
 import net.minecraft.client.renderer.block.BlockAndTintGetter;
@@ -35,6 +36,12 @@ public final class GoldenFoliageTint {
 
 	private static final ConcurrentHashMap<Biome, Boolean> CACHE = new ConcurrentHashMap<>();
 
+	/** Consecutive air blocks under a block that mark it as part of a floating island (mountains have no gap this tall). */
+	private static final int MIN_AIR_GAP = 24;
+	private static final int MAX_CACHE = 400_000;
+	private static final ConcurrentHashMap<Long, Boolean> ISLAND_CACHE = new ConcurrentHashMap<>();
+	private static volatile ClientLevel cachedLevel;
+
 	private static final ColorResolver GOLDEN_RESOLVER = (biome, x, z) ->
 			isGoldenBiome(biome) ? GOLD : BiomeColors.FOLIAGE_COLOR_RESOLVER.getColor(biome, x, z);
 
@@ -56,7 +63,7 @@ public final class GoldenFoliageTint {
 
 			@Override
 			public int colorInWorld(BlockState state, BlockAndTintGetter level, BlockPos pos) {
-				if (ClientConfig.goldenFoliage && pos.getY() >= ClientConfig.goldenFoliageMinY) {
+				if (isGoldenZone(pos)) {
 					return level.getBlockTint(pos, GOLDEN_RESOLVER);
 				}
 
@@ -72,11 +79,60 @@ public final class GoldenFoliageTint {
 	 * Used by {@link AutumnGrassTint}, which owns the grass-type blocks.
 	 */
 	public static int grassColor(BlockAndTintGetter level, BlockPos pos) {
-		if (ClientConfig.goldenFoliage && pos.getY() >= ClientConfig.goldenFoliageMinY) {
+		if (isGoldenZone(pos)) {
 			return level.getBlockTint(pos, GOLDEN_GRASS_RESOLVER);
 		}
 
 		return level.getBlockTint(pos, BiomeColors.GRASS_COLOR_RESOLVER);
+	}
+
+	/** A block only gets the golden tint when it is high enough AND sits on a floating island rather than on a mountain. */
+	private static boolean isGoldenZone(BlockPos pos) {
+		return ClientConfig.goldenFoliage && pos.getY() >= ClientConfig.goldenFoliageMinY && isOnSkyIsland(pos);
+	}
+
+	/**
+	 * A floating island has a tall gap of air somewhere beneath it before any ground; a mountain is solid (give or take
+	 * caves) all the way down. The result is cached per column and 16-block slice, and cleared when the world changes.
+	 */
+	private static boolean isOnSkyIsland(BlockPos pos) {
+		ClientLevel level = Minecraft.getInstance().level;
+
+		if (level == null) {
+			return false;
+		}
+
+		if (level != cachedLevel || ISLAND_CACHE.size() > MAX_CACHE) {
+			ISLAND_CACHE.clear();
+			cachedLevel = level;
+		}
+
+		long key = ((long) pos.getX() & 0x3FFFFFFL) << 38 | ((long) pos.getZ() & 0x3FFFFFFL) << 12 | ((long) (pos.getY() >> 4) & 0xFFFL);
+		Boolean cached = ISLAND_CACHE.get(key);
+
+		if (cached != null) {
+			return cached;
+		}
+
+		boolean island = false;
+		int run = 0;
+		BlockPos.MutableBlockPos probe = new BlockPos.MutableBlockPos(pos.getX(), 0, pos.getZ());
+
+		for (int y = pos.getY() - 1; y >= level.getMinY(); y--) {
+			probe.setY(y);
+
+			if (level.getBlockState(probe).isAir()) {
+				if (++run >= MIN_AIR_GAP) {
+					island = true;
+					break;
+				}
+			} else {
+				run = 0;
+			}
+		}
+
+		ISLAND_CACHE.put(key, island);
+		return island;
 	}
 
 	private static boolean isGoldenBiome(Biome biome) {
