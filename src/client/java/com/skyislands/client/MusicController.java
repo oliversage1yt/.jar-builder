@@ -5,9 +5,9 @@ import java.util.List;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.multiplayer.ClientLevel;
 import net.minecraft.client.player.LocalPlayer;
+import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.resources.Identifier;
 import net.minecraft.world.entity.Entity;
-import net.minecraft.world.entity.EntityType;
 import net.minecraft.world.entity.ai.attributes.Attributes;
 import net.minecraft.world.level.Level;
 
@@ -210,7 +210,7 @@ public final class MusicController {
 	}
 
 	private static boolean isBoss(Entity entity) {
-		if (entity.getType() != EntityType.ILLUSIONER || !entity.isAlive() || entity.isRemoved()) {
+		if (!entity.isAlive() || entity.isRemoved() || !BuiltInRegistries.ENTITY_TYPE.getKey(entity.getType()).getPath().equals("illusioner")) {
 			return false;
 		}
 
