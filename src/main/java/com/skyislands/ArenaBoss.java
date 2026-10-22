@@ -312,7 +312,7 @@ public final class ArenaBoss {
 		try {
 			MinecraftServer server = level.getServer();
 			CommandSourceStack source = server.createCommandSourceStack().withSuppressedOutput();
-			String command = String.format(Locale.ROOT, "summon minecraft:illusioner %.2f %.2f %.2f", x, pos.getY(), z);
+			String command = String.format(Locale.ROOT, "summon minecraft:illusioner %.2f %.2f %.2f", x, (double) pos.getY(), z);
 			server.getCommands().performPrefixedCommand(source, command);
 
 			if (!pendingAdopted) {
