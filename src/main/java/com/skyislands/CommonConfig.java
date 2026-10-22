@@ -20,8 +20,6 @@ public final class CommonConfig {
 	public static boolean lightThroughIslands = true;
 	/** Maps made below the islands ignore them; maps first used in the sky show only the islands (plus sky blue). */
 	public static boolean skyMaps = true;
-	/** Sand, gravel and similar blocks that fall from naturally generated islands vanish below the island band instead of piling up. */
-	public static boolean naturalFallingBlocksVanish = true;
 	/** Water and lava of naturally generated islands cannot flow out of the island. */
 	public static boolean naturalFluidsContained = true;
 
@@ -42,7 +40,7 @@ public final class CommonConfig {
 
 		lightThroughIslands = bool(p, "lightThroughIslands", lightThroughIslands);
 		skyMaps = bool(p, "skyMaps", skyMaps);
-		naturalFallingBlocksVanish = bool(p, "naturalFallingBlocksVanish", naturalFallingBlocksVanish);
+		p.remove("naturalFallingBlocksVanish"); // setting from older versions (feature removed)
 		naturalFluidsContained = bool(p, "naturalFluidsContained", naturalFluidsContained);
 
 		arenaBossHealth = Math.max(1.0, dbl(p, "arenaBossHealth", arenaBossHealth));
@@ -50,7 +48,6 @@ public final class CommonConfig {
 		p.setProperty("arenaBossHealth", String.valueOf(arenaBossHealth));
 		p.setProperty("lightThroughIslands", String.valueOf(lightThroughIslands));
 		p.setProperty("skyMaps", String.valueOf(skyMaps));
-		p.setProperty("naturalFallingBlocksVanish", String.valueOf(naturalFallingBlocksVanish));
 		p.setProperty("naturalFluidsContained", String.valueOf(naturalFluidsContained));
 
 		try {

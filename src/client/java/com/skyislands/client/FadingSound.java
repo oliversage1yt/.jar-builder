@@ -8,7 +8,7 @@ import net.minecraft.sounds.SoundSource;
 
 /**
  * A music track whose volume can be faded in or out. It plays in the MUSIC category (so the in-game Music slider
- * controls it), is not positional, and does not loop.
+ * controls it), is not positional, and does not loop unless {@link #setLoop} is used.
  */
 public class FadingSound extends AbstractSoundInstance implements TickableSoundInstance {
 	private boolean stopped;
@@ -39,6 +39,11 @@ public class FadingSound extends AbstractSoundInstance implements TickableSoundI
 			this.fadeTicksLeft = ticks;
 			this.step = (targetVolume - this.volume) / ticks;
 		}
+	}
+
+	/** Make the track repeat until it is stopped (used by the boss music, which must outlast the fight). */
+	public void setLoop(boolean loop) {
+		this.looping = loop;
 	}
 
 	/** End the track immediately (no fade). */

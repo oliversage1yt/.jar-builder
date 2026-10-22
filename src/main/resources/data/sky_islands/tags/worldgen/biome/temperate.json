@@ -1,5 +1,6 @@
 {
   "values": [
+    "minecraft:badlands",
     "minecraft:bamboo_jungle",
     "minecraft:beach",
     "minecraft:birch_forest",
@@ -10,6 +11,8 @@
     "minecraft:deep_dark",
     "minecraft:deep_lukewarm_ocean",
     "minecraft:deep_ocean",
+    "minecraft:desert",
+    "minecraft:eroded_badlands",
     "minecraft:flower_forest",
     "minecraft:forest",
     "minecraft:jungle",
@@ -23,10 +26,14 @@
     "minecraft:pale_garden",
     "minecraft:plains",
     "minecraft:river",
+    "minecraft:savanna",
+    "minecraft:savanna_plateau",
     "minecraft:sparse_jungle",
     "minecraft:sulfur_caves",
     "minecraft:sunflower_plains",
     "minecraft:taiga",
-    "minecraft:warm_ocean"
+    "minecraft:warm_ocean",
+    "minecraft:windswept_savanna",
+    "minecraft:wooded_badlands"
   ]
 }

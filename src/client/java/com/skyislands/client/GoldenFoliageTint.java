@@ -21,8 +21,8 @@ import net.minecraft.world.level.block.state.BlockState;
 
 /**
  * Golden-yellow foliage (like the islands in Tears of the Kingdom) on islands over temperate biomes: plains, forests,
- * taiga, rivers and cooler oceans. Warm or wet biomes (jungles, swamps, warm oceans), deserts, snowy biomes and so on
- * keep their normal foliage colour, and so does everything below the island band.
+ * taiga, rivers, cooler oceans, and desert/badlands/savanna (where the sand islands used to be). Jungles, swamps, warm
+ * oceans, snowy biomes and so on keep their normal foliage colour, and so does everything below the island band.
  */
 public final class GoldenFoliageTint {
 	/** Golden yellow (#e5b93b). */
@@ -32,7 +32,8 @@ public final class GoldenFoliageTint {
 
 	private static final Set<String> GOLDEN_BIOMES = Set.of(
 			"plains", "sunflower_plains", "forest", "flower_forest", "birch_forest", "old_growth_birch_forest", "dark_forest",
-			"taiga", "old_growth_pine_taiga", "old_growth_spruce_taiga", "river", "beach", "ocean", "deep_ocean", "cold_ocean", "deep_cold_ocean");
+			"taiga", "old_growth_pine_taiga", "old_growth_spruce_taiga", "river", "beach", "ocean", "deep_ocean", "cold_ocean", "deep_cold_ocean",
+			"desert", "badlands", "eroded_badlands", "wooded_badlands", "savanna", "savanna_plateau", "windswept_savanna");
 
 	private static final ConcurrentHashMap<Biome, Boolean> CACHE = new ConcurrentHashMap<>();
 

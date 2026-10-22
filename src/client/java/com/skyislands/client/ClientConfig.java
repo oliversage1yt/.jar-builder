@@ -27,6 +27,10 @@ public final class ClientConfig {
 	public static int skyMusicGapTicks = 600;
 	public static int launchFadeInTicks = 10;
 	public static int launchFadeOutTicks = 80;
+	/** Boss music: how fast it fades in (and everything else fades out) when a Sky Illusioner fight starts. */
+	public static int bossFadeInTicks = 30;
+	/** How fast the boss music fades out once the boss is defeated (or you leave it behind). */
+	public static int bossFadeOutTicks = 60;
 
 	// ---- clouds (a copy of the original Sky Lands cloud particles)
 	public static boolean cloudsEnabled = true;
@@ -66,6 +70,8 @@ public final class ClientConfig {
 		skyMusicGapTicks = integer(p, "skyMusicGapTicks", skyMusicGapTicks);
 		launchFadeInTicks = integer(p, "launchFadeInTicks", launchFadeInTicks);
 		launchFadeOutTicks = integer(p, "launchFadeOutTicks", launchFadeOutTicks);
+		bossFadeInTicks = integer(p, "bossFadeInTicks", bossFadeInTicks);
+		bossFadeOutTicks = integer(p, "bossFadeOutTicks", bossFadeOutTicks);
 		cloudsEnabled = bool(p, "cloudsEnabled", cloudsEnabled);
 		cloudSpawnChance = dbl(p, "cloudSpawnChance", cloudSpawnChance);
 		cloudsPerBurst = integer(p, "cloudsPerBurst", cloudsPerBurst);
@@ -87,6 +93,8 @@ public final class ClientConfig {
 		out.setProperty("skyMusicGapTicks", String.valueOf(skyMusicGapTicks));
 		out.setProperty("launchFadeInTicks", String.valueOf(launchFadeInTicks));
 		out.setProperty("launchFadeOutTicks", String.valueOf(launchFadeOutTicks));
+		out.setProperty("bossFadeInTicks", String.valueOf(bossFadeInTicks));
+		out.setProperty("bossFadeOutTicks", String.valueOf(bossFadeOutTicks));
 		out.setProperty("cloudsEnabled", String.valueOf(cloudsEnabled));
 		out.setProperty("cloudSpawnChance", String.valueOf(cloudSpawnChance));
 		out.setProperty("cloudsPerBurst", String.valueOf(cloudsPerBurst));

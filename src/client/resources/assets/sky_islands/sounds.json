@@ -30,5 +30,29 @@
         "stream": true
       }
     ]
+  },
+  "music.islands_sorrow": {
+    "sounds": [
+      {
+        "name": "sky_islands:music/islands_sorrow",
+        "stream": true
+      }
+    ]
+  },
+  "music.singing_islands": {
+    "sounds": [
+      {
+        "name": "sky_islands:music/singing_islands",
+        "stream": true
+      }
+    ]
+  },
+  "music.battle_amongst_the_clouds": {
+    "sounds": [
+      {
+        "name": "sky_islands:music/battle_amongst_the_clouds",
+        "stream": true
+      }
+    ]
   }
 }

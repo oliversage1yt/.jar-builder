@@ -6,6 +6,8 @@ import net.minecraft.client.Minecraft;
 import net.minecraft.client.multiplayer.ClientLevel;
 import net.minecraft.client.player.LocalPlayer;
 import net.minecraft.resources.Identifier;
+import net.minecraft.world.entity.Entity;
+import net.minecraft.world.entity.EntityType;
 import net.minecraft.world.entity.ai.attributes.Attributes;
 import net.minecraft.world.level.Level;
 
@@ -19,6 +21,9 @@ import com.skyislands.SkyIslands;
  *       fades out when you land (or touch water).</li>
  *   <li><b>Sky tracks</b>: while you are in the overworld above the "enter" height a random track plays (never the same
  *       one twice in a row, with a gap between tracks). Dropping below the "exit" height fades the track out.</li>
+ *   <li><b>Boss music</b> (Battle amongst the Clouds): plays, looping, while a Sky Illusioner is nearby (the boss is spawned
+ *       when a player wakes it, so its presence is the fight). Everything else fades out quickly as it fades in; when the boss
+ *       is dead (or gone) it fades out and normal music can play again.</li>
  *   <li>Vanilla music is silenced while any of these is playing, and sky tracks never overlap the launch song.</li>
  * </ul>
  */
@@ -27,7 +32,14 @@ public final class MusicController {
 	private static final List<Identifier> SKY_TRACKS = List.of(
 			SkyIslands.id("music.swaying_islands"),
 			SkyIslands.id("music.an_islands_peace"),
-			SkyIslands.id("music.breathtaking_view"));
+			SkyIslands.id("music.breathtaking_view"),
+			SkyIslands.id("music.islands_sorrow"),
+			SkyIslands.id("music.singing_islands"));
+	private static final Identifier BOSS_SONG = SkyIslands.id("music.battle_amongst_the_clouds");
+	/** Must match the name ArenaBoss gives the boss. */
+	private static final String BOSS_NAME = "Sky Illusioner";
+	private static final double BOSS_RANGE = 64.0;
+	private static final int BOSS_SCAN_INTERVAL = 5;
 
 	private static final int FAST_FADE = 20;       // sky track fading out because a launch started
 	private static final int START_GRACE = 20;     // ticks before we trust isActive() after starting a sound
@@ -37,6 +49,12 @@ public final class MusicController {
 	private static boolean launchFading;
 	private static boolean launchArmed = true;
 	private static int launchTicks;
+
+	private static FadingSound boss;
+	private static boolean bossFading;
+	private static boolean bossPresent;
+	private static int bossTicks;
+	private static int bossScan;
 
 	private static FadingSound sky;
 	private static boolean skyFading;
@@ -78,6 +96,39 @@ public final class MusicController {
 		boolean overworld = Level.OVERWORLD.equals(level.dimension());
 		double y = player.getY();
 
+		// ------------------------------------------------------------------ boss music
+		if (!overworld) {
+			bossPresent = false;
+		} else if (++bossScan >= BOSS_SCAN_INTERVAL) {
+			bossScan = 0;
+			bossPresent = bossNearby(level, player);
+		}
+
+		if (boss != null) {
+			bossTicks++;
+
+			if (bossTicks > START_GRACE && !sounds.isActive(boss)) {
+				boss = null;
+				bossFading = false;
+			} else if (!bossPresent && !bossFading) {
+				boss.fadeTo(0.0F, ClientConfig.bossFadeOutTicks, true);
+				bossFading = true;
+			} else if (bossPresent && bossFading) {
+				boss.fadeTo(1.0F, ClientConfig.bossFadeInTicks, false); // the boss is still around: bring it back
+				bossFading = false;
+			}
+		} else if (bossPresent) {
+			boss = new FadingSound(BOSS_SONG, 0.0F);
+			boss.setLoop(true);
+			boss.fadeTo(1.0F, ClientConfig.bossFadeInTicks, false);
+			sounds.play(boss);
+			bossTicks = 0;
+			bossFading = false;
+			VanillaMusic.fadeOut(mc, ClientConfig.bossFadeInTicks);
+		}
+
+		boolean bossBusy = bossPresent || boss != null;
+
 		// ------------------------------------------------------------------ launch song
 		boolean thrust = overworld && player.getAttributeValue(Attributes.GRAVITY) < 0.0;
 
@@ -89,8 +140,11 @@ public final class MusicController {
 			} else if (!launchFading && launchTicks > LANDING_GRACE && (player.onGround() || player.isInWater() || !overworld)) {
 				launch.fadeTo(0.0F, ClientConfig.launchFadeOutTicks, true);
 				launchFading = true;
+			} else if (!launchFading && bossBusy) {
+				launch.fadeTo(0.0F, ClientConfig.bossFadeInTicks, true); // a boss fight cuts the launch song
+				launchFading = true;
 			}
-		} else if (thrust && launchArmed) {
+		} else if (thrust && launchArmed && !bossBusy) {
 			launch = new FadingSound(LAUNCH_SONG, 0.0F);
 			launch.fadeTo(1.0F, ClientConfig.launchFadeInTicks, false);
 			sounds.play(launch);
@@ -115,7 +169,7 @@ public final class MusicController {
 			inSkyZone = false;
 		}
 
-		boolean skyWanted = inSkyZone && !launchBusy;
+		boolean skyWanted = inSkyZone && !launchBusy && !bossBusy;
 
 		if (sky != null) {
 			skyTicks++;
@@ -125,7 +179,7 @@ public final class MusicController {
 				skyFading = false;
 				skyGap = ClientConfig.skyMusicGapTicks;
 			} else if (!skyWanted && !skyFading) {
-				sky.fadeTo(0.0F, launchBusy ? FAST_FADE : ClientConfig.skyFadeOutTicks, true);
+				sky.fadeTo(0.0F, bossBusy ? ClientConfig.bossFadeInTicks : launchBusy ? FAST_FADE : ClientConfig.skyFadeOutTicks, true);
 				skyFading = true;
 			} else if (skyWanted && skyFading) {
 				sky.fadeTo(1.0F, ClientConfig.skyFadeInTicks, false); // came back up before the fade finished
@@ -142,12 +196,26 @@ public final class MusicController {
 		}
 
 		// ------------------------------------------------------------------ keep vanilla music quiet
-		if (launch != null || sky != null || inSkyZone) {
+		if (launch != null || sky != null || boss != null || bossBusy || inSkyZone) {
 			if (++muteTimer >= 10) {
 				muteTimer = 0;
 				VanillaMusic.silence(mc);
 			}
 		}
+	}
+
+	/** True when a living Sky Illusioner (the arena boss) is loaded close to the player. */
+	private static boolean bossNearby(ClientLevel level, LocalPlayer player) {
+		return !level.getEntities(player, player.getBoundingBox().inflate(BOSS_RANGE), MusicController::isBoss).isEmpty();
+	}
+
+	private static boolean isBoss(Entity entity) {
+		if (entity.getType() != EntityType.ILLUSIONER || !entity.isAlive() || entity.isRemoved()) {
+			return false;
+		}
+
+		var name = entity.getCustomName();
+		return name != null && BOSS_NAME.equals(name.getString());
 	}
 
 	private static void startSkyTrack(Minecraft mc) {
@@ -175,6 +243,14 @@ public final class MusicController {
 			sky.kill();
 		}
 
+		if (boss != null) {
+			boss.kill();
+		}
+
+		boss = null;
+		bossFading = false;
+		bossPresent = false;
+		bossScan = 0;
 		launch = null;
 		sky = null;
 		launchFading = false;

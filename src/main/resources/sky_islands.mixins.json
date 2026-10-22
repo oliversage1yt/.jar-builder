@@ -6,7 +6,6 @@
 		"BiomeAltitudeMixin",
 		"ChunkSkyLightSourcesMixin",
 		"MapItemMixin",
-		"FallingBlockEntityMixin",
 		"FlowingFluidMixin"
 	],
 	"injectors": {
