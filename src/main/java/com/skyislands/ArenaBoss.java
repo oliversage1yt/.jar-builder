@@ -26,6 +26,7 @@ import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.sounds.SoundEvents;
 import net.minecraft.sounds.SoundSource;
 import net.minecraft.world.Difficulty;
+import net.minecraft.world.InteractionHand;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.entity.item.ItemEntity;
@@ -49,8 +50,9 @@ import net.minecraft.world.phys.Vec3;
  * <li>Every few ticks, chunks near players are scanned once for markers. A marker puffs black smoke; when a player comes
  * within {@link #TRIGGER_RANGE} blocks the marker is removed, a spawn sound plays and the Illusioner appears.</li>
  * <li>The boss is tagged, so it is re-adopted (boss bar, home position) after a world reload.</li>
- * <li>If it falls off the arena it is put back at the marker's position. Below a third of its health it drops the bow and
- * casts evoker fangs instead. On death it drops diamonds, iron, gold and a random enchanted book (90%, level at least one below the maximum).</li>
+ * <li>If it falls off the arena it is put back at the marker's position. The fight has three phases: above 2/3 health it
+ * charges the player with a diamond axe (like a Vindicator), between 2/3 and 1/3 it shoots arrows with its bow, and below
+ * 1/3 it drops the bow and casts evoker fangs. On death it drops diamonds, iron, gold and a random enchanted book (90%, level at least one below the maximum).</li>
  * </ul>
  */
 public final class ArenaBoss {
@@ -70,8 +72,20 @@ public final class ArenaBoss {
 	private static final double FALL_BELOW_HOME = 3.0;
 	private static final double MAX_DISTANCE_FROM_HOME = 26.0;
 
+	/** At or below this fraction of its health the boss stops charging with the axe and goes back to its bow. */
+	private static final float BOW_PHASE_HEALTH = 2.0F / 3.0F;
 	/** Below this fraction of its health the boss drops the bow and attacks with evoker fangs instead. */
 	private static final float FANG_PHASE_HEALTH = 1.0F / 3.0F;
+
+	/** Axe phase: damage of one swing (a diamond axe), ticks between swings, reach (squared) and run speed. */
+	private static final float AXE_DAMAGE = 9.0F;
+	private static final int AXE_COOLDOWN_TICKS = 20;
+	private static final double AXE_REACH_SQR = 6.25;
+	private static final double AXE_RUN_SPEED = 1.35;
+
+	private static final int PHASE_AXE = 0;
+	private static final int PHASE_BOW = 1;
+	private static final int PHASE_FANGS = 2;
 	/** Ticks between fang attacks (a vanilla Evoker waits several seconds). */
 	private static final int FANG_COOLDOWN_TICKS = 24;
 	private static final double FANG_RANGE = 40.0;
@@ -99,6 +113,9 @@ public final class ArenaBoss {
 		final BlockPos home;
 		boolean enraged;
 		int fangCooldown;
+		/** -1 until the first tick, so the right weapon is (re)applied after a spawn or a world reload. */
+		int phase = -1;
+		int axeCooldown;
 
 		Boss(Mob mob, ServerBossEvent bar, BlockPos home) {
 			this.mob = mob;
@@ -457,6 +474,7 @@ public final class ArenaBoss {
 			bar.setProgress(1.0F);
 			Boss boss = new Boss(mob, bar, home);
 			boss.enraged = tagsOf(mob).contains(ENRAGED_TAG);
+			// phase stays -1: the first tick picks the phase from the current health and re-equips the weapon
 			BOSSES.put(mob.getUUID(), boss);
 		} catch (ReflectiveOperationException | RuntimeException e) {
 			SkyIslands.LOGGER.error("Sky Islands could not create the arena boss bar; the boss will fight without one", e);
@@ -504,8 +522,14 @@ public final class ArenaBoss {
 				}
 			}
 
-			if (!boss.enraged && mob.getHealth() <= mob.getMaxHealth() * FANG_PHASE_HEALTH) {
-				enrage(level, boss);
+			int wanted = phaseFor(mob);
+
+			if (wanted != boss.phase) {
+				enterPhase(level, boss, wanted);
+			}
+
+			if (boss.phase == PHASE_AXE) {
+				tickAxe(level, boss);
 			}
 
 			if (boss.enraged && --boss.fangCooldown <= 0) {
@@ -546,18 +570,73 @@ public final class ArenaBoss {
 		return level.getServer().createCommandSourceStack().withSuppressedOutput();
 	}
 
-	/** Switches the boss from the bow to evoker fangs. */
-	private static void enrage(ServerLevel level, Boss boss) {
+	private static int phaseFor(Mob mob) {
+		float health = mob.getHealth();
+		float max = mob.getMaxHealth();
+
+		if (health <= max * FANG_PHASE_HEALTH) {
+			return PHASE_FANGS;
+		}
+
+		return health <= max * BOW_PHASE_HEALTH ? PHASE_BOW : PHASE_AXE;
+	}
+
+	private static void setMainHand(ServerLevel level, Mob mob, String item) {
+		command(level, quietSource(level), "item replace entity " + mob.getUUID() + " weapon.mainhand with " + item);
+	}
+
+	/**
+	 * Gives the boss the weapon of its new phase. The Illusioner only shoots while it holds a bow, so the axe and the
+	 * empty hand both switch the arrows off.
+	 */
+	private static void enterPhase(ServerLevel level, Boss boss, int phase) {
 		Mob mob = boss.mob;
-		boss.enraged = true;
+		boolean first = boss.phase < 0;
+		boss.phase = phase;
+		boss.enraged = phase == PHASE_FANGS;
+		boss.axeCooldown = AXE_COOLDOWN_TICKS;
 		boss.fangCooldown = 20;
-		mob.addTag(ENRAGED_TAG);
 
-		// With no bow in hand the Illusioner's ranged attack stops; the fangs take over.
-		command(level, quietSource(level), "item replace entity " + mob.getUUID() + " weapon.mainhand with minecraft:air");
+		if (phase == PHASE_AXE) {
+			setMainHand(level, mob, "minecraft:diamond_axe");
+		} else if (phase == PHASE_BOW) {
+			setMainHand(level, mob, "minecraft:bow");
+		} else {
+			setMainHand(level, mob, "minecraft:air");
+			mob.addTag(ENRAGED_TAG);
+		}
 
-		level.playSound(null, mob.blockPosition(), SoundEvents.EVOKER_PREPARE_ATTACK, SoundSource.HOSTILE, 2.0F, 0.7F);
-		level.sendParticles(ParticleTypes.LARGE_SMOKE, mob.getX(), mob.getY() + 1.0, mob.getZ(), 40, 0.6, 0.8, 0.6, 0.05);
+		if (!first) {
+			level.playSound(null, mob.blockPosition(), SoundEvents.EVOKER_PREPARE_ATTACK, SoundSource.HOSTILE, 2.0F, phase == PHASE_FANGS ? 0.7F : 1.0F);
+			level.sendParticles(ParticleTypes.LARGE_SMOKE, mob.getX(), mob.getY() + 1.0, mob.getZ(), 40, 0.6, 0.8, 0.6, 0.05);
+		}
+	}
+
+	/** Axe phase: run at the target and swing the axe like a Vindicator. */
+	private static void tickAxe(ServerLevel level, Boss boss) {
+		Mob mob = boss.mob;
+		LivingEntity target = mob.getTarget();
+
+		if (boss.axeCooldown > 0) {
+			boss.axeCooldown--;
+		}
+
+		if (target == null || !target.isAlive()) {
+			return;
+		}
+
+		mob.getLookControl().setLookAt(target, 30.0F, 30.0F);
+
+		if (mob.tickCount % 4 == 0) {
+			mob.getNavigation().moveTo(target, AXE_RUN_SPEED);
+		}
+
+		if (boss.axeCooldown <= 0 && mob.distanceToSqr(target) <= AXE_REACH_SQR && mob.hasLineOfSight(target)) {
+			boss.axeCooldown = AXE_COOLDOWN_TICKS;
+			mob.swing(InteractionHand.MAIN_HAND);
+			command(level, quietSource(level), String.format(Locale.ROOT, "damage %s %.1f minecraft:mob_attack by %s",
+					target.getUUID(), AXE_DAMAGE, mob.getUUID()));
+		}
 	}
 
 	/** Same patterns as a vanilla Evoker: a ring or two when the target is close, otherwise a long line, but far quicker. */
