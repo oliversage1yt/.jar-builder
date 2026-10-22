@@ -35,9 +35,6 @@ import net.minecraft.world.entity.item.ItemEntity;
 import net.minecraft.world.entity.Mob;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.entity.ai.attributes.Attributes;
-import net.minecraft.world.entity.ai.goal.Goal;
-import net.minecraft.world.entity.ai.goal.GoalSelector;
-import net.minecraft.world.entity.ai.goal.WrappedGoal;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.Items;
 import net.minecraft.world.level.block.Blocks;
@@ -127,7 +124,7 @@ public final class ArenaBoss {
 		int phase = -1;
 		int axeCooldown;
 		/** The Illusioner's mirror image spell goal while it is taken away during the axe phase. */
-		Goal mirrorGoal;
+		Object mirrorGoal;
 		int mirrorPriority;
 
 		Boss(Mob mob, ServerBossEvent bar, BlockPos home) {
@@ -628,26 +625,47 @@ public final class ArenaBoss {
 		}
 	}
 
-	/** Takes the mirror image spell goal away (allowed = false) or gives it back (allowed = true). */
+	/** First public method with this name and parameter count (reflection, so no goal classes are referenced directly). */
+	private static Method findMethod(Class<?> type, String name, int parameters) {
+		for (Method m : type.getMethods()) {
+			if (m.getName().equals(name) && m.getParameterCount() == parameters) {
+				m.setAccessible(true);
+				return m;
+			}
+		}
+
+		return null;
+	}
+
+	/**
+	 * Takes the mirror image spell goal away (allowed = false) or gives it back (allowed = true). Done entirely through
+	 * reflection because the goal classes and the goal selector field are not part of the public API.
+	 */
 	private static void setMirrorSpell(Boss boss, boolean allowed) {
 		try {
 			Field field = Mob.class.getDeclaredField("goalSelector");
 			field.setAccessible(true);
-			GoalSelector selector = (GoalSelector) field.get(boss.mob);
+			Object selector = field.get(boss.mob);
 
 			if (allowed) {
 				if (boss.mirrorGoal != null) {
-					selector.addGoal(boss.mirrorPriority, boss.mirrorGoal);
+					Method add = findMethod(selector.getClass(), "addGoal", 2);
+					add.invoke(selector, boss.mirrorPriority, boss.mirrorGoal);
 					boss.mirrorGoal = null;
 				}
 			} else if (boss.mirrorGoal == null) {
-				for (WrappedGoal wrapped : new ArrayList<>(selector.getAvailableGoals())) {
-					Goal goal = wrapped.getGoal();
+				Method getGoals = findMethod(selector.getClass(), "getAvailableGoals", 0);
+				Method remove = findMethod(selector.getClass(), "removeGoal", 1);
+
+				for (Object wrapped : new ArrayList<>((java.util.Collection<?>) getGoals.invoke(selector))) {
+					Method getGoal = findMethod(wrapped.getClass(), "getGoal", 0);
+					Method getPriority = findMethod(wrapped.getClass(), "getPriority", 0);
+					Object goal = getGoal.invoke(wrapped);
 
 					if (goal.getClass().getSimpleName().toLowerCase(Locale.ROOT).contains("mirror")) {
-						boss.mirrorPriority = wrapped.getPriority();
+						boss.mirrorPriority = (Integer) getPriority.invoke(wrapped);
 						boss.mirrorGoal = goal;
-						selector.removeGoal(goal);
+						remove.invoke(selector, goal);
 						break;
 					}
 				}
