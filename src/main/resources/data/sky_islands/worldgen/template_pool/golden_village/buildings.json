@@ -1,7 +1,7 @@
 {
   "elements": [
     {
-      "weight": 1,
+      "weight": 4,
       "element": {
         "element_type": "minecraft:single_pool_element",
         "location": "sky_islands:golden_village/house_medium",
@@ -14,6 +14,33 @@
       "element": {
         "element_type": "minecraft:single_pool_element",
         "location": "sky_islands:golden_village/house_small",
+        "projection": "rigid",
+        "processors": "minecraft:empty"
+      }
+    },
+    {
+      "weight": 1,
+      "element": {
+        "element_type": "minecraft:single_pool_element",
+        "location": "sky_islands:golden_village/house_small_yellow",
+        "projection": "rigid",
+        "processors": "minecraft:empty"
+      }
+    },
+    {
+      "weight": 1,
+      "element": {
+        "element_type": "minecraft:single_pool_element",
+        "location": "sky_islands:golden_village/house_small_red",
+        "projection": "rigid",
+        "processors": "minecraft:empty"
+      }
+    },
+    {
+      "weight": 1,
+      "element": {
+        "element_type": "minecraft:single_pool_element",
+        "location": "sky_islands:golden_village/house_small_light_gray",
         "projection": "rigid",
         "processors": "minecraft:empty"
       }
