@@ -22,8 +22,8 @@ public final class Tuning {
 	public static final int ISLAND_MIN_Y = 110;
 	/** A column counts as "island above ground" when an air gap at least this tall separates them. */
 	public static final int ISLAND_GAP = 24;
-	/** Naturally generated falling blocks that drop below this height (leaving the island band) vanish. */
-	public static final int ISLAND_CUTOFF_Y = 108;
+	/** Naturally generated falling blocks that drop below this height (the sky island height level) vanish. */
+	public static final int ISLAND_CUTOFF_Y = 140;
 	/** A map first used at or above this height becomes a "sky map" that shows the islands. */
 	public static final int SKY_MAP_MIN_Y = 140;
 }

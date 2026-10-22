@@ -50,7 +50,7 @@ import net.minecraft.world.phys.Vec3;
  * within {@link #TRIGGER_RANGE} blocks the marker is removed, a spawn sound plays and the Illusioner appears.</li>
  * <li>The boss is tagged, so it is re-adopted (boss bar, home position) after a world reload.</li>
  * <li>If it falls off the arena it is put back at the marker's position. Below a third of its health it drops the bow and
- * casts evoker fangs instead. On death it drops diamonds, iron, gold and sometimes a random enchanted book.</li>
+ * casts evoker fangs instead. On death it drops diamonds, iron, gold and a random enchanted book (90%, level at least one below the maximum).</li>
  * </ul>
  */
 public final class ArenaBoss {
@@ -76,7 +76,7 @@ public final class ArenaBoss {
 	private static final int FANG_COOLDOWN_TICKS = 24;
 	private static final double FANG_RANGE = 40.0;
 	/** Chance that the boss drops a random enchanted book. */
-	private static final float BOOK_CHANCE = 0.4F;
+	private static final float BOOK_CHANCE = 0.9F;
 
 	private static final String[] BOOK_ENCHANTS = {
 		"protection", "fire_protection", "feather_falling", "blast_protection", "projectile_protection", "respiration",
@@ -632,7 +632,9 @@ public final class ArenaBoss {
 
 		if (random.nextFloat() < BOOK_CHANCE) {
 			int pick = random.nextInt(BOOK_ENCHANTS.length);
-			int enchantLevel = 1 + random.nextInt(BOOK_ENCHANT_MAX[pick]);
+			int max = BOOK_ENCHANT_MAX[pick];
+			// Never below max - 1 (sharpness is 4 or 5); single-level enchantments are always level 1.
+			int enchantLevel = max <= 1 ? 1 : (max - 1) + random.nextInt(2);
 			String command = String.format(Locale.ROOT,
 					"summon minecraft:item %.2f %.2f %.2f {Item:{id:\"minecraft:enchanted_book\",count:1,components:{\"minecraft:stored_enchantments\":{\"minecraft:%s\":%d}}}}",
 					x, y, z, BOOK_ENCHANTS[pick], enchantLevel);
