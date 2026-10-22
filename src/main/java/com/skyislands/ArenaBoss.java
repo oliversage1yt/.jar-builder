@@ -32,7 +32,6 @@ import net.minecraft.world.entity.Mob;
 import net.minecraft.world.entity.ai.attributes.Attributes;
 import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.block.state.BlockState;
-import net.minecraft.world.level.block.state.properties.BlockStateProperties;
 import net.minecraft.world.level.chunk.LevelChunk;
 import net.minecraft.world.level.chunk.LevelChunkSection;
 import net.minecraft.world.phys.Vec3;
@@ -42,7 +41,7 @@ import net.minecraft.world.phys.Vec3;
  *
  * <p>How it fits together:
  * <ul>
- * <li>Worldgen (data only) swaps the arena's chest for an invisible {@code light[level=0]} "marker" block half of the time
+ * <li>Worldgen (data only) swaps the arena's chest for an invisible {@code barrier} "marker" block half of the time
  * (see worldgen/template_pool/skyarena.json). The marker is the persistent record that a boss is waiting there.</li>
  * <li>Every few ticks, chunks near players are scanned once for markers. A marker puffs black smoke; when a player comes
  * within {@link #TRIGGER_RANGE} blocks the marker is removed, a spawn sound plays and the Illusioner appears.</li>
@@ -176,7 +175,7 @@ public final class ArenaBoss {
 	// ------------------------------------------------------------------ markers
 
 	private static boolean isMarker(BlockState state) {
-		return state.is(Blocks.LIGHT) && state.getValue(BlockStateProperties.LEVEL) == 0;
+		return state.is(Blocks.BARRIER);
 	}
 
 	/** Looks once at every loaded chunk close to a player. */
