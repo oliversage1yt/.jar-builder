@@ -12,7 +12,7 @@ import org.slf4j.LoggerFactory;
 
 /**
  * Sky Islands {Islands}. Almost everything (islands, geysers, structures) is data in src/main/resources/data.
- * The code in this mod adds: no-altitude-snow (mixin), and client-side music fading, cloud particles and orange grass.
+ * The code in this mod adds: no-altitude-snow (mixin), and client-side music fading, cloud particles and orange grass, plus the sky arena boss.
  */
 public class SkyIslands implements ModInitializer {
 	public static final String MOD_ID = "sky_islands";
@@ -23,8 +23,10 @@ public class SkyIslands implements ModInitializer {
 		CommonConfig.load();
 		ServerChunkEvents.CHUNK_GENERATE.register(GroundFreezer::onGenerate);
 		ServerTickEvents.END_SERVER_TICK.register(GroundFreezer::tick);
+		ArenaBoss.register();
 		ServerLifecycleEvents.SERVER_STOPPED.register(server -> {
 			GroundFreezer.clear();
+			ArenaBoss.clear();
 			com.skyislands.world.IslandColumns.clear();
 		});
 		LOGGER.info("Sky Islands {Islands} loaded.");

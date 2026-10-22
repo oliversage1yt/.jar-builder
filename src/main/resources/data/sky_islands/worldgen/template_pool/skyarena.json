@@ -13,6 +13,31 @@
               "blocks": [
                 "minecraft:structure_block"
               ]
+            },
+            {
+              "processor_type": "minecraft:rule",
+              "rules": [
+                {
+                  "input_predicate": {
+                    "predicate_type": "minecraft:random_block_match",
+                    "block": "minecraft:chest",
+                    "probability": 0.5
+                  },
+                  "location_predicate": {
+                    "predicate_type": "minecraft:always_true"
+                  },
+                  "output_state": {
+                    "Name": "minecraft:light",
+                    "Properties": {
+                      "level": "0",
+                      "waterlogged": "false"
+                    }
+                  },
+                  "block_entity_modifier": {
+                    "type": "minecraft:clear"
+                  }
+                }
+              ]
             }
           ]
         }

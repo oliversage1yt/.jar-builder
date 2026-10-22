@@ -25,6 +25,9 @@ public final class CommonConfig {
 	/** Water and lava of naturally generated islands cannot flow out of the island. */
 	public static boolean naturalFluidsContained = true;
 
+	/** Maximum health of the sky arena boss (a vanilla Illusioner has 32). */
+	public static double arenaBossHealth = 200.0;
+
 	public static void load() {
 		Path file = FabricLoader.getInstance().getConfigDir().resolve("sky_islands.properties");
 		Properties p = new Properties();
@@ -42,6 +45,9 @@ public final class CommonConfig {
 		naturalFallingBlocksVanish = bool(p, "naturalFallingBlocksVanish", naturalFallingBlocksVanish);
 		naturalFluidsContained = bool(p, "naturalFluidsContained", naturalFluidsContained);
 
+		arenaBossHealth = Math.max(1.0, dbl(p, "arenaBossHealth", arenaBossHealth));
+
+		p.setProperty("arenaBossHealth", String.valueOf(arenaBossHealth));
 		p.setProperty("lightThroughIslands", String.valueOf(lightThroughIslands));
 		p.setProperty("skyMaps", String.valueOf(skyMaps));
 		p.setProperty("naturalFallingBlocksVanish", String.valueOf(naturalFallingBlocksVanish));
@@ -55,6 +61,20 @@ public final class CommonConfig {
 			}
 		} catch (IOException e) {
 			SkyIslands.LOGGER.warn("Could not write {}: {}", file, e.toString());
+		}
+	}
+
+	private static double dbl(Properties p, String key, double fallback) {
+		String v = p.getProperty(key);
+
+		if (v == null) {
+			return fallback;
+		}
+
+		try {
+			return Double.parseDouble(v.trim());
+		} catch (NumberFormatException e) {
+			return fallback;
 		}
 	}
 

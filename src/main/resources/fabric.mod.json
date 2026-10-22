@@ -3,7 +3,7 @@
 	"id": "sky_islands",
 	"version": "${version}",
 	"name": "Sky Islands {Islands}",
-	"description": "Floating sky islands, archipelagos, towers and ruins high above the overworld, with surface geyser launchers, fading island music, sprite clouds, and orange autumn grass. Uses only vanilla blocks, items and entities.",
+	"description": "Floating sky islands, archipelagos, towers and ruins high above the overworld, with surface geyser launchers, fading island music, sprite clouds, orange autumn grass, and a boss guarding the sky arenas. Uses only vanilla blocks, items and entities.",
 	"authors": [
 		"Port of Sky Lands by DeepCanionStudio"
 	],
