@@ -1,5 +1,7 @@
 package com.skyislands;
 
+import java.lang.reflect.Constructor;
+import java.lang.reflect.Method;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Iterator;
@@ -15,6 +17,7 @@ import net.fabricmc.fabric.api.event.lifecycle.v1.ServerTickEvents;
 import net.minecraft.commands.CommandSourceStack;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.particles.ParticleTypes;
+import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.network.chat.Component;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerBossEvent;
@@ -22,11 +25,8 @@ import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.sounds.SoundEvents;
 import net.minecraft.sounds.SoundSource;
-import net.minecraft.world.BossEvent;
 import net.minecraft.world.Difficulty;
 import net.minecraft.world.entity.Entity;
-import net.minecraft.world.entity.EntitySpawnReason;
-import net.minecraft.world.entity.EntityType;
 import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.entity.Mob;
 import net.minecraft.world.entity.ai.attributes.Attributes;
@@ -84,6 +84,13 @@ public final class ArenaBoss {
 	private static final Map<ServerLevel, Set<BlockPos>> MARKERS = new HashMap<>();
 	private static final Map<UUID, Boss> BOSSES = new HashMap<>();
 
+	/** Set only while the summon command runs: the arena position the new Illusioner belongs to. */
+	private static BlockPos pendingHome;
+	private static boolean pendingAdopted;
+
+	private static Method tagsMethod;
+	private static boolean tagsLookedUp;
+
 	private static int tickCounter;
 	private static boolean markersFailed;
 	private static boolean bossesFailed;
@@ -94,7 +101,17 @@ public final class ArenaBoss {
 		ServerTickEvents.END_SERVER_TICK.register(ArenaBoss::tick);
 
 		ServerEntityEvents.ENTITY_LOAD.register((entity, level) -> {
-			if (entity instanceof Mob mob && entity.getTags().contains(BOSS_TAG)) {
+			if (!(entity instanceof Mob mob)) {
+				return;
+			}
+
+			if (pendingHome != null && !pendingAdopted && isIllusioner(entity)
+					&& entity.distanceToSqr(pendingHome.getX() + 0.5, pendingHome.getY() + 0.5, pendingHome.getZ() + 0.5) < 9.0) {
+				// The Illusioner that the summon command in spawnBoss() just created.
+				pendingAdopted = true;
+				adopt(mob, pendingHome);
+			} else if (tagsOf(entity).contains(BOSS_TAG)) {
+				// A boss coming back after a world reload.
 				BlockPos home = parseHome(entity);
 				track(mob, home != null ? home : mob.blockPosition());
 			}
@@ -109,7 +126,7 @@ public final class ArenaBoss {
 		});
 
 		ServerLivingEntityEvents.AFTER_DEATH.register((entity, source) -> {
-			if (entity.getTags().contains(BOSS_TAG) && entity.level() instanceof ServerLevel level) {
+			if (tagsOf(entity).contains(BOSS_TAG) && entity.level() instanceof ServerLevel level) {
 				onDeath(level, entity);
 			}
 		});
@@ -289,13 +306,30 @@ public final class ArenaBoss {
 		level.playSound(null, pos, SoundEvents.WITHER_SPAWN, SoundSource.HOSTILE, 1.5F, 1.1F);
 		level.sendParticles(ParticleTypes.LARGE_SMOKE, x, y, z, 40, 0.6, 0.6, 0.6, 0.05);
 
-		Mob boss = EntityType.ILLUSIONER.spawn(level, pos, EntitySpawnReason.EVENT);
+		// A plain vanilla summon (so the Illusioner gets its bow and normal setup); ENTITY_LOAD adopts it as the boss.
+		pendingHome = pos.immutable();
+		pendingAdopted = false;
 
-		if (boss == null) {
-			SkyIslands.LOGGER.warn("Could not spawn the arena boss at {}", pos);
-			return;
+		try {
+			MinecraftServer server = level.getServer();
+			CommandSourceStack source = server.createCommandSourceStack().withSuppressedOutput();
+			String command = String.format(Locale.ROOT, "summon minecraft:illusioner %.2f %.2f %.2f", x, pos.getY(), z);
+			server.getCommands().performPrefixedCommand(source, command);
+
+			if (!pendingAdopted) {
+				SkyIslands.LOGGER.warn("Could not spawn the arena boss at {}", pos);
+			}
+		} finally {
+			pendingHome = null;
 		}
+	}
 
+	private static boolean isIllusioner(Entity entity) {
+		return BuiltInRegistries.ENTITY_TYPE.getKey(entity.getType()).getPath().equals("illusioner");
+	}
+
+	/** Turns a freshly summoned Illusioner into the boss. */
+	private static void adopt(Mob boss, BlockPos home) {
 		var maxHealth = boss.getAttribute(Attributes.MAX_HEALTH);
 
 		if (maxHealth != null) {
@@ -306,8 +340,84 @@ public final class ArenaBoss {
 		boss.setCustomName(Component.literal(BOSS_NAME));
 		boss.setPersistenceRequired();
 		boss.addTag(BOSS_TAG);
-		boss.addTag(HOME_TAG_PREFIX + pos.getX() + ":" + pos.getY() + ":" + pos.getZ());
-		track(boss, pos.immutable());
+		boss.addTag(HOME_TAG_PREFIX + home.getX() + ":" + home.getY() + ":" + home.getZ());
+		track(boss, home.immutable());
+	}
+
+	/** Entity tags, looked up by name because the getter was renamed between Minecraft versions. */
+	@SuppressWarnings("unchecked")
+	private static Set<String> tagsOf(Entity entity) {
+		if (!tagsLookedUp) {
+			tagsLookedUp = true;
+
+			for (String name : new String[] {"getTags", "entityTags", "tags"}) {
+				try {
+					Method m = Entity.class.getMethod(name);
+
+					if (Set.class.isAssignableFrom(m.getReturnType())) {
+						tagsMethod = m;
+						break;
+					}
+				} catch (NoSuchMethodException ignored) {
+					// try the next name
+				}
+			}
+
+			if (tagsMethod == null) {
+				SkyIslands.LOGGER.error("Sky Islands could not find the entity tag getter; arena bosses will not survive a reload");
+			}
+		}
+
+		if (tagsMethod != null) {
+			try {
+				return (Set<String>) tagsMethod.invoke(entity);
+			} catch (ReflectiveOperationException e) {
+				return Set.of();
+			}
+		}
+
+		return Set.of();
+	}
+
+	/** Builds the boss bar with whichever constructor this Minecraft version has (with or without a UUID). */
+	private static ServerBossEvent createBar() throws ReflectiveOperationException {
+		Component name = Component.literal(BOSS_NAME);
+
+		for (Constructor<?> c : ServerBossEvent.class.getConstructors()) {
+			Class<?>[] types = c.getParameterTypes();
+			Object[] args = new Object[types.length];
+			boolean ok = true;
+
+			for (int i = 0; i < types.length && ok; i++) {
+				Class<?> t = types[i];
+
+				if (t == UUID.class) {
+					args[i] = UUID.randomUUID();
+				} else if (t.isEnum()) {
+					args[i] = null;
+
+					for (Object constant : t.getEnumConstants()) {
+						String n = ((Enum<?>) constant).name();
+
+						if (n.equals("PURPLE") || n.equals("NOTCHED_10")) {
+							args[i] = constant;
+						}
+					}
+
+					ok = args[i] != null;
+				} else if (t.isInstance(name)) {
+					args[i] = name;
+				} else {
+					ok = false;
+				}
+			}
+
+			if (ok) {
+				return (ServerBossEvent) c.newInstance(args);
+			}
+		}
+
+		throw new IllegalStateException("No usable ServerBossEvent constructor");
 	}
 
 	private static void track(Mob mob, BlockPos home) {
@@ -315,13 +425,17 @@ public final class ArenaBoss {
 			return;
 		}
 
-		ServerBossEvent bar = new ServerBossEvent(Component.literal(BOSS_NAME), BossEvent.BossBarColor.PURPLE, BossEvent.BossBarOverlay.NOTCHED_10);
-		bar.setProgress(1.0F);
-		BOSSES.put(mob.getUUID(), new Boss(mob, bar, home));
+		try {
+			ServerBossEvent bar = createBar();
+			bar.setProgress(1.0F);
+			BOSSES.put(mob.getUUID(), new Boss(mob, bar, home));
+		} catch (ReflectiveOperationException | RuntimeException e) {
+			SkyIslands.LOGGER.error("Sky Islands could not create the arena boss bar; the boss will fight without one", e);
+		}
 	}
 
 	private static BlockPos parseHome(Entity entity) {
-		for (String tag : entity.getTags()) {
+		for (String tag : tagsOf(entity)) {
 			if (tag.startsWith(HOME_TAG_PREFIX)) {
 				String[] parts = tag.substring(HOME_TAG_PREFIX.length()).split(":");
 
