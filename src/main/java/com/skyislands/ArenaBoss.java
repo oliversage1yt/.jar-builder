@@ -1,7 +1,9 @@
 package com.skyislands;
 
 import java.lang.reflect.Constructor;
+import java.lang.reflect.Field;
 import java.lang.reflect.Method;
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Iterator;
@@ -33,6 +35,9 @@ import net.minecraft.world.entity.item.ItemEntity;
 import net.minecraft.world.entity.Mob;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.entity.ai.attributes.Attributes;
+import net.minecraft.world.entity.ai.goal.Goal;
+import net.minecraft.world.entity.ai.goal.GoalSelector;
+import net.minecraft.world.entity.ai.goal.WrappedGoal;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.Items;
 import net.minecraft.world.level.block.Blocks;
@@ -82,7 +87,7 @@ public final class ArenaBoss {
 	private static final float AXE_DAMAGE = 9.0F;
 	private static final int AXE_COOLDOWN_TICKS = 20;
 	private static final double AXE_REACH_SQR = 6.25;
-	private static final double AXE_RUN_SPEED = 1.35;
+	private static final double AXE_RUN_SPEED = 0.675;
 
 	/** Chance that an axe swing at a blocking player disables their shield, and for how long. */
 	private static final float SHIELD_DISABLE_CHANCE = 0.25F;
@@ -121,6 +126,9 @@ public final class ArenaBoss {
 		/** -1 until the first tick, so the right weapon is (re)applied after a spawn or a world reload. */
 		int phase = -1;
 		int axeCooldown;
+		/** The Illusioner's mirror image spell goal while it is taken away during the axe phase. */
+		Goal mirrorGoal;
+		int mirrorPriority;
 
 		Boss(Mob mob, ServerBossEvent bar, BlockPos home) {
 			this.mob = mob;
@@ -602,6 +610,9 @@ public final class ArenaBoss {
 		boss.axeCooldown = AXE_COOLDOWN_TICKS;
 		boss.fangCooldown = 20;
 
+		// No mirror image / vanishing spell while it charges with the axe.
+		setMirrorSpell(boss, phase != PHASE_AXE);
+
 		if (phase == PHASE_AXE) {
 			setMainHand(level, mob, "minecraft:diamond_axe");
 		} else if (phase == PHASE_BOW) {
@@ -617,6 +628,35 @@ public final class ArenaBoss {
 		}
 	}
 
+	/** Takes the mirror image spell goal away (allowed = false) or gives it back (allowed = true). */
+	private static void setMirrorSpell(Boss boss, boolean allowed) {
+		try {
+			Field field = Mob.class.getDeclaredField("goalSelector");
+			field.setAccessible(true);
+			GoalSelector selector = (GoalSelector) field.get(boss.mob);
+
+			if (allowed) {
+				if (boss.mirrorGoal != null) {
+					selector.addGoal(boss.mirrorPriority, boss.mirrorGoal);
+					boss.mirrorGoal = null;
+				}
+			} else if (boss.mirrorGoal == null) {
+				for (WrappedGoal wrapped : new ArrayList<>(selector.getAvailableGoals())) {
+					Goal goal = wrapped.getGoal();
+
+					if (goal.getClass().getSimpleName().toLowerCase(Locale.ROOT).contains("mirror")) {
+						boss.mirrorPriority = wrapped.getPriority();
+						boss.mirrorGoal = goal;
+						selector.removeGoal(goal);
+						break;
+					}
+				}
+			}
+		} catch (ReflectiveOperationException | RuntimeException e) {
+			SkyIslands.LOGGER.warn("Sky Islands could not switch the Illusioner's mirror image spell; invisibility is cleared instead", e);
+		}
+	}
+
 	/** Axe phase: run at the target and swing the axe like a Vindicator. */
 	private static void tickAxe(ServerLevel level, Boss boss) {
 		Mob mob = boss.mob;
@@ -624,6 +664,11 @@ public final class ArenaBoss {
 
 		if (boss.axeCooldown > 0) {
 			boss.axeCooldown--;
+		}
+
+		// Backup for the spell switch above: never stay invisible (and so never show clones) in the axe phase.
+		if (mob.isInvisible()) {
+			command(level, quietSource(level), "effect clear " + mob.getUUID() + " minecraft:invisibility");
 		}
 
 		if (target == null || !target.isAlive()) {
