@@ -31,6 +31,7 @@ import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.entity.item.ItemEntity;
 import net.minecraft.world.entity.Mob;
+import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.entity.ai.attributes.Attributes;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.Items;
@@ -82,6 +83,10 @@ public final class ArenaBoss {
 	private static final int AXE_COOLDOWN_TICKS = 20;
 	private static final double AXE_REACH_SQR = 6.25;
 	private static final double AXE_RUN_SPEED = 1.35;
+
+	/** Chance that an axe swing at a blocking player disables their shield, and for how long. */
+	private static final float SHIELD_DISABLE_CHANCE = 0.25F;
+	private static final int SHIELD_COOLDOWN_TICKS = 100;
 
 	private static final int PHASE_AXE = 0;
 	private static final int PHASE_BOW = 1;
@@ -633,9 +638,81 @@ public final class ArenaBoss {
 
 		if (boss.axeCooldown <= 0 && mob.distanceToSqr(target) <= AXE_REACH_SQR && mob.hasLineOfSight(target)) {
 			boss.axeCooldown = AXE_COOLDOWN_TICKS;
-			mob.swing(InteractionHand.MAIN_HAND);
+			swingArm(mob);
+
+			// Checked before the hit: a raised shield still blocks the damage, like a vanilla axe hit.
+			boolean blocking = target instanceof Player p && p.isBlocking();
+			ItemStack shield = blocking ? ((Player) target).getUseItem().copy() : ItemStack.EMPTY;
+
 			command(level, quietSource(level), String.format(Locale.ROOT, "damage %s %.1f minecraft:mob_attack by %s",
 					target.getUUID(), AXE_DAMAGE, mob.getUUID()));
+
+			if (blocking && mob.getRandom().nextFloat() < SHIELD_DISABLE_CHANCE) {
+				disableShield(level, (Player) target, shield);
+			}
+		}
+	}
+
+	/** Plays the arm swing. Looked up by reflection because the signature differs between Minecraft versions. */
+	private static void swingArm(Mob mob) {
+		try {
+			for (Method m : LivingEntity.class.getMethods()) {
+				if (!m.getName().equals("swing") || m.getParameterCount() == 0 || m.getParameterTypes()[0] != InteractionHand.class) {
+					continue;
+				}
+
+				Class<?>[] types = m.getParameterTypes();
+				Object[] args = new Object[types.length];
+				args[0] = InteractionHand.MAIN_HAND;
+				boolean ok = true;
+
+				for (int i = 1; i < types.length; i++) {
+					if (types[i] == boolean.class) {
+						args[i] = Boolean.TRUE;
+					} else {
+						ok = false;
+					}
+				}
+
+				if (ok) {
+					m.invoke(mob, args);
+					return;
+				}
+			}
+		} catch (ReflectiveOperationException | RuntimeException ignored) {
+			// the swing is only cosmetic
+		}
+	}
+
+	/** Knocks the shield out of use and puts it on cooldown, like a vanilla axe hit that disables a shield. */
+	private static void disableShield(ServerLevel level, Player player, ItemStack shield) {
+		player.stopUsingItem();
+		level.playSound(null, player.blockPosition(), SoundEvents.SHIELD_BREAK, SoundSource.PLAYERS, 0.8F, 0.8F + level.getRandom().nextFloat() * 0.4F);
+
+		if (shield.isEmpty()) {
+			return;
+		}
+
+		try {
+			Object cooldowns = player.getCooldowns();
+
+			for (Method m : cooldowns.getClass().getMethods()) {
+				if (!m.getName().equals("addCooldown") || m.getParameterCount() != 2 || m.getParameterTypes()[1] != int.class) {
+					continue;
+				}
+
+				Class<?> first = m.getParameterTypes()[0];
+
+				if (first == ItemStack.class) {
+					m.invoke(cooldowns, shield, SHIELD_COOLDOWN_TICKS);
+					return;
+				} else if (first == shield.getItem().getClass() || first.isAssignableFrom(shield.getItem().getClass())) {
+					m.invoke(cooldowns, shield.getItem(), SHIELD_COOLDOWN_TICKS);
+					return;
+				}
+			}
+		} catch (ReflectiveOperationException | RuntimeException e) {
+			SkyIslands.LOGGER.warn("Sky Islands could not put the shield on cooldown", e);
 		}
 	}
 
