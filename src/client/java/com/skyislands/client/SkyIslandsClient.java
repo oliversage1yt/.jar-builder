@@ -12,6 +12,7 @@ public class SkyIslandsClient implements ClientModInitializer {
 		CloudSetup.register();
 		AutumnGrassTint.register();
 		GoldenFoliageTint.register();
+		MusicToast.register();
 
 		ClientTickEvents.END_CLIENT_TICK.register(client -> {
 			MusicController.tick(client);

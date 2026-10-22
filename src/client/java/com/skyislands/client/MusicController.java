@@ -122,6 +122,7 @@ public final class MusicController {
 			boss.setLoop(true);
 			boss.fadeTo(1.0F, ClientConfig.bossFadeInTicks, false);
 			sounds.play(boss);
+			MusicToast.songStarted(BOSS_SONG);
 			bossTicks = 0;
 			bossFading = false;
 			VanillaMusic.fadeOut(mc, ClientConfig.bossFadeInTicks);
@@ -148,6 +149,7 @@ public final class MusicController {
 			launch = new FadingSound(LAUNCH_SONG, 0.0F);
 			launch.fadeTo(1.0F, ClientConfig.launchFadeInTicks, false);
 			sounds.play(launch);
+			MusicToast.songStarted(LAUNCH_SONG);
 			VanillaMusic.fadeOut(mc, Math.max(40, ClientConfig.launchFadeInTicks));
 			launchTicks = 0;
 			launchFading = false;
@@ -229,12 +231,20 @@ public final class MusicController {
 		sky = new FadingSound(SKY_TRACKS.get(pick), 0.0F);
 		sky.fadeTo(1.0F, ClientConfig.skyFadeInTicks, false);
 		mc.getSoundManager().play(sky);
+		MusicToast.songStarted(sky.soundId());
 		skyTicks = 0;
 		skyFading = false;
 		VanillaMusic.fadeOut(mc, ClientConfig.skyFadeInTicks);
 	}
 
+	/** Display name of the Sky Islands song that is playing right now (boss theme first), or null. Used by the music toast. */
+	static String nowPlaying() {
+		FadingSound playing = boss != null ? boss : launch != null ? launch : sky;
+		return playing == null ? null : MusicToast.titleOf(playing.soundId());
+	}
+
 	private static void reset(Minecraft mc) {
+		MusicToast.reset();
 		if (launch != null) {
 			launch.kill();
 		}

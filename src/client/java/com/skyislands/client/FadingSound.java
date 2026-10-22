@@ -11,6 +11,7 @@ import net.minecraft.sounds.SoundSource;
  * controls it), is not positional, and does not loop unless {@link #setLoop} is used.
  */
 public class FadingSound extends AbstractSoundInstance implements TickableSoundInstance {
+	private final Identifier soundId;
 	private boolean stopped;
 	private boolean stopAtZero;
 	private float target;
@@ -19,6 +20,7 @@ public class FadingSound extends AbstractSoundInstance implements TickableSoundI
 
 	public FadingSound(Identifier sound, float startVolume) {
 		super(sound, SoundSource.MUSIC, SoundInstance.createUnseededRandom());
+		this.soundId = sound;
 		this.volume = startVolume;
 		this.target = startVolume;
 		this.looping = false;
@@ -39,6 +41,10 @@ public class FadingSound extends AbstractSoundInstance implements TickableSoundI
 			this.fadeTicksLeft = ticks;
 			this.step = (targetVolume - this.volume) / ticks;
 		}
+	}
+
+	public Identifier soundId() {
+		return this.soundId;
 	}
 
 	/** Make the track repeat until it is stopped (used by the boss music, which must outlast the fight). */

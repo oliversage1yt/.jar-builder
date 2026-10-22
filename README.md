@@ -23,7 +23,7 @@ A port of *Sky Lands* (DeepCanionStudio, MIT) that uses **only vanilla blocks, i
      git push -u origin main
      ```
 3. Open the repo's **Actions** tab. The `build` workflow (`.github/workflows/build.yml`) starts by itself on every push (about 2-4 minutes). It installs Gradle itself, so it works even if the Gradle wrapper jar did not upload.
-4. When it is green, open the run, scroll to **Artifacts**, and download `Artifacts`. Inside is `sky-islands-2.6.0.jar`
+4. When it is green, open the run, scroll to **Artifacts**, and download `Artifacts`. Inside is `sky-islands-2.7.1.jar`
    (ignore the `-sources` jar). Put that jar in your `mods` folder next to Fabric API.
 
 If the build is **red**, open the failed step, copy the first 20 or so lines containing `error:` and send them over;
@@ -44,6 +44,7 @@ each one points to an exact file and line.
 | **Maps** | `MapItemMixin`: a map remembers (in its custom_data) whether it was first used in the sky. Maps made below the islands ignore them and show the ground; sky maps show only the islands and solid sky blue elsewhere. |
 | **Fluids** | `FlowingFluidMixin`: island water/lava cannot flow out of the island. "Generated" means inside the island's structure area, so blocks a player adds *inside* an island are treated as part of it; anything placed in open sky behaves normally. (The falling-block cleanup was removed in 2.6.0 together with the sand islands.) |
 | **Deserts** | The sand/desert islands are gone. Desert, badlands and savanna biomes now use the temperate (golden) islands, arenas and structures, and golden foliage tint applies over them too. |
+| **Music toasts** | `MusicToast` (client): the now-playing box for every Sky Islands song (the five sky tracks, Skyborn and the boss theme), shown according to the vanilla *Music Toast* setting: Never = nothing, Pause Screen = only while the pause menu is open, Pause Screen and Toast = also slides in from the left edge for about 5 seconds when a song starts. The box is the mod's own 160x32 9-slice texture and the icon is a hand-drawn cloud that bobs 2 pixels every half second; both are baked into the code as pixel rectangles, so there is no texture file to load. |
 | **Boss music** | `MusicController` (client): while a Sky Illusioner is within 64 blocks, *Battle amongst the Clouds* fades in quickly (looping) while sky music, the geyser song and vanilla music fade out. When the boss is dead it fades out and normal music can play again. |
 | **Golden foliage** | `GoldenFoliageTint` (client): only on floating islands (a tall air gap below the block), not on mountains. Leaves, grass, grass blocks and ferns on islands over plains, forests, taiga, rivers and cooler oceans are golden yellow. Desert, badlands and savanna are golden too; jungles, swamps, warm oceans and snowy biomes keep their own colours. Those islands also have gold ore instead of emerald ore (data). |
 | **Orange grass** | `AutumnGrassTint` (client). Grass high up and near any autumn block (poplar, fallen leaves, red shrubs, red sand, roses) is tinted dappled-forest orange (`#df6827`), whatever biome the island floats over. |
