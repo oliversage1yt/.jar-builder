@@ -2,14 +2,21 @@ package com.skyislands.client;
 
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
+import java.lang.reflect.Modifier;
+import java.lang.reflect.ParameterizedType;
+import java.lang.reflect.Proxy;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Map;
 
 import net.fabricmc.fabric.api.client.rendering.v1.hud.HudElementRegistry;
+import net.fabricmc.fabric.api.event.Event;
 import net.fabricmc.fabric.api.client.screen.v1.ScreenEvents;
 
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.Font;
 import net.minecraft.client.gui.screens.PauseScreen;
+import net.minecraft.client.gui.screens.Screen;
 import net.minecraft.network.chat.Component;
 import net.minecraft.resources.Identifier;
 
@@ -198,6 +205,10 @@ final class MusicToast {
 
 	private static final int WHITE = 0xFFFFFFFF;
 
+	private static Field screenField;
+	private static boolean screenSearched;
+	private static boolean hookFailed;
+
 	private static String hudTitle;
 	private static long hudStart;
 
@@ -219,9 +230,81 @@ final class MusicToast {
 
 		ScreenEvents.AFTER_INIT.register((client, screen, width, height) -> {
 			if (screen instanceof PauseScreen) {
-				ScreenEvents.afterRender(screen).register((s, graphics, mouseX, mouseY, delta) -> renderPause(graphics));
+				hookScreenRender(screen);
 			}
 		});
+	}
+
+	/**
+	 * Registers {@link #renderPause} to run after the pause screen has drawn. Fabric's event for this has been renamed between
+	 * versions (afterRender / afterExtract ...), so it is found by name pattern at runtime and given a proxy listener.
+	 */
+	private static void hookScreenRender(Screen screen) {
+		if (hookFailed) {
+			return;
+		}
+
+		try {
+			List<Method> candidates = new ArrayList<>();
+
+			for (Method m : ScreenEvents.class.getMethods()) {
+				String n = m.getName().toLowerCase();
+
+				if (Modifier.isStatic(m.getModifiers()) && m.getParameterCount() == 1 && m.getParameterTypes()[0].isAssignableFrom(Screen.class)
+						&& n.startsWith("after") && (n.contains("render") || n.contains("extract") || n.contains("draw"))
+						&& m.getGenericReturnType() instanceof ParameterizedType) {
+					candidates.add(m);
+				}
+			}
+
+			if (candidates.isEmpty()) {
+				hookFailed = true;
+				SkyIslands.LOGGER.warn("Sky Islands could not find Fabric's after-screen-render event; the pause screen toast is off.");
+				return;
+			}
+
+			candidates.sort((a, b) -> Integer.compare(a.getName().length(), b.getName().length()));
+			Method method = candidates.get(0);
+			Object event = method.invoke(null, screen);
+			Class<?> listener = (Class<?>) ((ParameterizedType) method.getGenericReturnType()).getActualTypeArguments()[0];
+
+			Object proxy = Proxy.newProxyInstance(listener.getClassLoader(), new Class<?>[] {listener}, (self, called, args) -> {
+				if (called.getDeclaringClass() == Object.class) {
+					return called.getName().equals("hashCode") ? System.identityHashCode(self) : called.getName().equals("equals") ? self == args[0] : "SkyIslandsMusicToast";
+				}
+
+				if (args != null && args.length > 1) {
+					renderPause(args[1]);
+				}
+
+				return null;
+			});
+
+			Event.class.getMethod("register", Object.class).invoke(event, proxy);
+		} catch (Throwable t) {
+			hookFailed = true;
+			SkyIslands.LOGGER.warn("Sky Islands could not hook the pause screen toast: {}", t.toString());
+		}
+	}
+
+	/** True while the pause menu is the open screen. The screen field is found by its type, so its name does not matter. */
+	private static boolean pauseOpen(Minecraft mc) {
+		try {
+			if (!screenSearched) {
+				screenSearched = true;
+
+				for (Field f : Minecraft.class.getDeclaredFields()) {
+					if (f.getType() == Screen.class && !Modifier.isStatic(f.getModifiers()) && (screenField == null || f.getName().equals("screen"))) {
+						f.setAccessible(true);
+						screenField = f;
+					}
+				}
+			}
+
+			return screenField != null && screenField.get(mc) instanceof PauseScreen;
+		} catch (Throwable t) {
+			return false;
+		}
 	}
 
 	/** The display name of one of our songs, or null. */
@@ -252,7 +335,7 @@ final class MusicToast {
 
 		Minecraft mc = Minecraft.getInstance();
 
-		if (mc.screen instanceof PauseScreen || setting(mc) != PAUSE_AND_TOAST) {
+		if (pauseOpen(mc) || setting(mc) != PAUSE_AND_TOAST) {
 			return;
 		}
 
