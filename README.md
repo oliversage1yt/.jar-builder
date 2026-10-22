@@ -23,7 +23,7 @@ A port of *Sky Lands* (DeepCanionStudio, MIT) that uses **only vanilla blocks, i
      git push -u origin main
      ```
 3. Open the repo's **Actions** tab. The `build` workflow (`.github/workflows/build.yml`) starts by itself on every push (about 2-4 minutes). It installs Gradle itself, so it works even if the Gradle wrapper jar did not upload.
-4. When it is green, open the run, scroll to **Artifacts**, and download `Artifacts`. Inside is `sky-islands-2.8.1.jar`
+4. When it is green, open the run, scroll to **Artifacts**, and download `Artifacts`. Inside is `sky-islands-2.8.2.jar`
    (ignore the `-sources` jar). Put that jar in your `mods` folder next to Fabric API.
 
 If the build is **red**, open the failed step, copy the first 20 or so lines containing `error:` and send them over;

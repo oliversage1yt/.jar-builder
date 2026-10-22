@@ -687,7 +687,7 @@ public final class ArenaBoss {
 	/** Knocks the shield out of use and puts it on cooldown, like a vanilla axe hit that disables a shield. */
 	private static void disableShield(ServerLevel level, Player player, ItemStack shield) {
 		player.stopUsingItem();
-		level.playSound(null, player.blockPosition(), SoundEvents.SHIELD_BREAK, SoundSource.PLAYERS, 0.8F, 0.8F + level.getRandom().nextFloat() * 0.4F);
+		level.playSound(null, player.blockPosition(), SoundEvents.SHIELD_BREAK.value(), SoundSource.PLAYERS, 0.8F, 0.8F + level.getRandom().nextFloat() * 0.4F);
 
 		if (shield.isEmpty()) {
 			return;
