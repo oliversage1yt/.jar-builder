@@ -28,8 +28,11 @@ import net.minecraft.sounds.SoundSource;
 import net.minecraft.world.Difficulty;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.LivingEntity;
+import net.minecraft.world.entity.item.ItemEntity;
 import net.minecraft.world.entity.Mob;
 import net.minecraft.world.entity.ai.attributes.Attributes;
+import net.minecraft.world.item.ItemStack;
+import net.minecraft.world.item.Items;
 import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.chunk.LevelChunk;
@@ -46,14 +49,14 @@ import net.minecraft.world.phys.Vec3;
  * <li>Every few ticks, chunks near players are scanned once for markers. A marker puffs black smoke; when a player comes
  * within {@link #TRIGGER_RANGE} blocks the marker is removed, a spawn sound plays and the Illusioner appears.</li>
  * <li>The boss is tagged, so it is re-adopted (boss bar, home position) after a world reload.</li>
- * <li>If it falls off the arena it is put back at the marker's position. On death it drops
- * data/sky_islands/loot_table/entities/arena_boss.json.</li>
+ * <li>If it falls off the arena it is put back at the marker's position. Below a third of its health it drops the bow and
+ * casts evoker fangs instead. On death it drops diamonds, iron, gold and sometimes a random enchanted book.</li>
  * </ul>
  */
 public final class ArenaBoss {
 	private static final String BOSS_TAG = "sky_islands_arena_boss";
 	private static final String HOME_TAG_PREFIX = "sky_islands_home:";
-	private static final String LOOT_TABLE = "sky_islands:entities/arena_boss";
+	private static final String ENRAGED_TAG = "sky_islands_enraged";
 	private static final String BOSS_NAME = "Sky Illusioner";
 
 	/** A player this close to the smoke wakes the boss. */
@@ -67,10 +70,35 @@ public final class ArenaBoss {
 	private static final double FALL_BELOW_HOME = 3.0;
 	private static final double MAX_DISTANCE_FROM_HOME = 26.0;
 
+	/** Below this fraction of its health the boss drops the bow and attacks with evoker fangs instead. */
+	private static final float FANG_PHASE_HEALTH = 1.0F / 3.0F;
+	/** Ticks between fang attacks (a vanilla Evoker waits several seconds). */
+	private static final int FANG_COOLDOWN_TICKS = 24;
+	private static final double FANG_RANGE = 40.0;
+	/** Chance that the boss drops a random enchanted book. */
+	private static final float BOOK_CHANCE = 0.4F;
+
+	private static final String[] BOOK_ENCHANTS = {
+		"protection", "fire_protection", "feather_falling", "blast_protection", "projectile_protection", "respiration",
+		"aqua_affinity", "thorns", "depth_strider", "frost_walker", "soul_speed", "swift_sneak", "sharpness", "smite",
+		"bane_of_arthropods", "knockback", "fire_aspect", "looting", "sweeping_edge", "efficiency", "silk_touch",
+		"unbreaking", "fortune", "power", "punch", "flame", "infinity", "luck_of_the_sea", "lure", "loyalty",
+		"impaling", "riptide", "channeling", "multishot", "piercing", "quick_charge", "mending"
+	};
+	private static final int[] BOOK_ENCHANT_MAX = {
+		4, 4, 4, 4, 4, 3,
+		1, 3, 3, 2, 3, 3, 5, 5,
+		5, 2, 2, 3, 3, 5, 1,
+		3, 3, 5, 2, 1, 1, 3, 3, 3,
+		5, 3, 1, 1, 4, 3, 1
+	};
+
 	private static final class Boss {
 		final Mob mob;
 		final ServerBossEvent bar;
 		final BlockPos home;
+		boolean enraged;
+		int fangCooldown;
 
 		Boss(Mob mob, ServerBossEvent bar, BlockPos home) {
 			this.mob = mob;
@@ -427,7 +455,9 @@ public final class ArenaBoss {
 		try {
 			ServerBossEvent bar = createBar();
 			bar.setProgress(1.0F);
-			BOSSES.put(mob.getUUID(), new Boss(mob, bar, home));
+			Boss boss = new Boss(mob, bar, home);
+			boss.enraged = tagsOf(mob).contains(ENRAGED_TAG);
+			BOSSES.put(mob.getUUID(), boss);
 		} catch (ReflectiveOperationException | RuntimeException e) {
 			SkyIslands.LOGGER.error("Sky Islands could not create the arena boss bar; the boss will fight without one", e);
 		}
@@ -474,6 +504,21 @@ public final class ArenaBoss {
 				}
 			}
 
+			if (!boss.enraged && mob.getHealth() <= mob.getMaxHealth() * FANG_PHASE_HEALTH) {
+				enrage(level, boss);
+			}
+
+			if (boss.enraged && --boss.fangCooldown <= 0) {
+				LivingEntity target = mob.getTarget();
+
+				if (target != null && target.isAlive() && mob.distanceToSqr(target) <= FANG_RANGE * FANG_RANGE) {
+					castFangs(level, mob, target);
+					boss.fangCooldown = FANG_COOLDOWN_TICKS;
+				} else {
+					boss.fangCooldown = 5;
+				}
+			}
+
 			double dx = mob.getX() - (boss.home.getX() + 0.5);
 			double dz = mob.getZ() - (boss.home.getZ() + 0.5);
 			boolean fell = mob.getY() < boss.home.getY() - FALL_BELOW_HOME;
@@ -491,6 +536,83 @@ public final class ArenaBoss {
 		}
 	}
 
+	// ------------------------------------------------------------------ fang phase
+
+	private static void command(ServerLevel level, CommandSourceStack source, String command) {
+		level.getServer().getCommands().performPrefixedCommand(source, command);
+	}
+
+	private static CommandSourceStack quietSource(ServerLevel level) {
+		return level.getServer().createCommandSourceStack().withSuppressedOutput();
+	}
+
+	/** Switches the boss from the bow to evoker fangs. */
+	private static void enrage(ServerLevel level, Boss boss) {
+		Mob mob = boss.mob;
+		boss.enraged = true;
+		boss.fangCooldown = 20;
+		mob.addTag(ENRAGED_TAG);
+
+		// With no bow in hand the Illusioner's ranged attack stops; the fangs take over.
+		command(level, quietSource(level), "item replace entity " + mob.getUUID() + " weapon.mainhand with minecraft:air");
+
+		level.playSound(null, mob.blockPosition(), SoundEvents.EVOKER_PREPARE_ATTACK, SoundSource.HOSTILE, 2.0F, 0.7F);
+		level.sendParticles(ParticleTypes.LARGE_SMOKE, mob.getX(), mob.getY() + 1.0, mob.getZ(), 40, 0.6, 0.8, 0.6, 0.05);
+	}
+
+	/** Same patterns as a vanilla Evoker: a ring or two when the target is close, otherwise a long line, but far quicker. */
+	private static void castFangs(ServerLevel level, Mob mob, LivingEntity target) {
+		CommandSourceStack source = quietSource(level);
+		UUID id = mob.getUUID();
+		String owner = String.format(Locale.ROOT, "[I;%d,%d,%d,%d]",
+				(int) (id.getMostSignificantBits() >>> 32), (int) id.getMostSignificantBits(),
+				(int) (id.getLeastSignificantBits() >>> 32), (int) id.getLeastSignificantBits());
+
+		double minY = Math.min(target.getY(), mob.getY());
+		double maxY = Math.max(target.getY(), mob.getY()) + 1.0;
+		float angle = (float) Math.atan2(target.getZ() - mob.getZ(), target.getX() - mob.getX());
+
+		level.playSound(null, mob.blockPosition(), SoundEvents.EVOKER_CAST_SPELL, SoundSource.HOSTILE, 1.0F, 1.2F);
+
+		if (mob.distanceToSqr(target) < 9.0) {
+			for (int i = 0; i < 5; i++) {
+				float f = angle + i * (float) Math.PI * 2.0F / 5.0F + 1.2566371F;
+				fang(level, source, owner, mob.getX() + Math.cos(f) * 1.5, mob.getZ() + Math.sin(f) * 1.5, minY, maxY, 0);
+			}
+
+			for (int i = 0; i < 8; i++) {
+				float f = angle + i * (float) Math.PI * 2.0F / 8.0F + 1.2566371F;
+				fang(level, source, owner, mob.getX() + Math.cos(f) * 2.5, mob.getZ() + Math.sin(f) * 2.5, minY, maxY, 2);
+			}
+		} else {
+			for (int i = 0; i < 16; i++) {
+				double d = 1.25 * (i + 1);
+				fang(level, source, owner, mob.getX() + Math.cos(angle) * d, mob.getZ() + Math.sin(angle) * d, minY, maxY, 3 + i);
+			}
+		}
+	}
+
+	/** Puts one fang on the ground at (x, z), searching downward from maxY like the vanilla Evoker does. */
+	private static void fang(ServerLevel level, CommandSourceStack source, String owner, double x, double z, double minY, double maxY, int warmup) {
+		int bx = (int) Math.floor(x);
+		int bz = (int) Math.floor(z);
+
+		for (int y = (int) Math.floor(maxY); y >= (int) Math.floor(minY) - 2; y--) {
+			BlockPos pos = new BlockPos(bx, y, bz);
+
+			if (!level.hasChunkAt(pos)) {
+				return;
+			}
+
+			if (level.getBlockState(pos).isAir() && !level.getBlockState(pos.below()).isAir()) {
+				command(level, source, String.format(Locale.ROOT, "summon minecraft:evoker_fangs %.2f %d %.2f {Warmup:%d,Owner:%s}", x, y, z, warmup, owner));
+				return;
+			}
+		}
+	}
+
+	// ------------------------------------------------------------------ drops
+
 	private static void onDeath(ServerLevel level, LivingEntity entity) {
 		Boss boss = BOSSES.remove(entity.getUUID());
 
@@ -498,10 +620,27 @@ public final class ArenaBoss {
 			boss.bar.removeAllPlayers();
 		}
 
-		// Loot comes from a data-driven table, so amounts can be tuned without touching code.
-		MinecraftServer server = level.getServer();
-		CommandSourceStack source = server.createCommandSourceStack().withSuppressedOutput();
-		String command = String.format(Locale.ROOT, "loot spawn %.2f %.2f %.2f loot %s", entity.getX(), entity.getY() + 0.5, entity.getZ(), LOOT_TABLE);
-		server.getCommands().performPrefixedCommand(source, command);
+		// Rolled here rather than from a loot table: the loot table's count/enchant functions were being ignored.
+		var random = level.getRandom();
+		double x = entity.getX();
+		double y = entity.getY() + 0.5;
+		double z = entity.getZ();
+
+		drop(level, x, y, z, new ItemStack(Items.DIAMOND, 5 + random.nextInt(6)));
+		drop(level, x, y, z, new ItemStack(Items.IRON_INGOT, 3 + random.nextInt(6)));
+		drop(level, x, y, z, new ItemStack(Items.GOLD_INGOT, 5 + random.nextInt(8)));
+
+		if (random.nextFloat() < BOOK_CHANCE) {
+			int pick = random.nextInt(BOOK_ENCHANTS.length);
+			int enchantLevel = 1 + random.nextInt(BOOK_ENCHANT_MAX[pick]);
+			String command = String.format(Locale.ROOT,
+					"summon minecraft:item %.2f %.2f %.2f {Item:{id:\"minecraft:enchanted_book\",count:1,components:{\"minecraft:stored_enchantments\":{\"minecraft:%s\":%d}}}}",
+					x, y, z, BOOK_ENCHANTS[pick], enchantLevel);
+			command(level, quietSource(level), command);
+		}
+	}
+
+	private static void drop(ServerLevel level, double x, double y, double z, ItemStack stack) {
+		level.addFreshEntity(new ItemEntity(level, x, y, z, stack));
 	}
 }
