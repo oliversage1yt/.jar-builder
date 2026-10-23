@@ -25,6 +25,8 @@ public final class CommonConfig {
 
 	/** Maximum health of the sky arena boss (a vanilla Illusioner has 32). */
 	public static double arenaBossHealth = 200.0;
+	/** Health the boss regains every 2 seconds once it has gone 10 seconds without taking damage (0 turns it off). */
+	public static double arenaBossRegen = 4.0;
 	/** Respawning the boss puts the lower part of the arena (where the boss fights) back as it generated; the upper part keeps player changes. */
 	public static boolean arenaResetOnRespawn = true;
 
@@ -46,12 +48,14 @@ public final class CommonConfig {
 		naturalFluidsContained = bool(p, "naturalFluidsContained", naturalFluidsContained);
 
 		arenaBossHealth = Math.max(1.0, dbl(p, "arenaBossHealth", arenaBossHealth));
+		arenaBossRegen = Math.max(0.0, dbl(p, "arenaBossRegen", arenaBossRegen));
 
 		arenaResetOnRespawn = bool(p, "arenaResetOnRespawn", arenaResetOnRespawn);
 
 		p.remove("arenaRespawnItems"); // setting from a previous version (the respawn item is now always a plain Book)
 
 		p.setProperty("arenaBossHealth", String.valueOf(arenaBossHealth));
+		p.setProperty("arenaBossRegen", String.valueOf(arenaBossRegen));
 		p.setProperty("arenaResetOnRespawn", String.valueOf(arenaResetOnRespawn));
 		p.setProperty("lightThroughIslands", String.valueOf(lightThroughIslands));
 		p.setProperty("skyMaps", String.valueOf(skyMaps));

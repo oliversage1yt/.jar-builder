@@ -5,12 +5,13 @@ import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
 
+import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.world.entity.Mob;
 import net.minecraft.world.item.Items;
 
 /**
- * Makes the Sky Illusioner hold its diamond axe like a Vindicator (arms raised, axe visible) instead of the bow-aiming
- * pose. The target is named by string, with both package names Minecraft has used for the Illusioner, so that a version
+ * Makes the Sky Illusioner hold its diamond axe (or the diamond spear it throws in the last phase) like a Vindicator (arms
+ * raised, weapon visible) instead of the bow-aiming pose. The target is named by string, with both package names Minecraft has used for the Illusioner, so that a version
  * where the class or method is missing simply leaves the mixin unused instead of breaking the build or the game.
  */
 @Mixin(targets = {
@@ -28,7 +29,7 @@ public abstract class IllusionerAxePoseMixin {
 
 		Mob self = (Mob) (Object) this;
 
-		if (!self.isAggressive() || !self.getMainHandItem().is(Items.DIAMOND_AXE)) {
+		if (!self.isAggressive() || !holdsRaisedWeapon(self)) {
 			return;
 		}
 
@@ -40,5 +41,14 @@ public abstract class IllusionerAxePoseMixin {
 				return;
 			}
 		}
+	}
+
+	/** The diamond axe (axe phase) and the diamond spear (thrown in the fang phase) are both held raised. */
+	private static boolean holdsRaisedWeapon(Mob self) {
+		if (self.getMainHandItem().is(Items.DIAMOND_AXE)) {
+			return true;
+		}
+
+		return BuiltInRegistries.ITEM.getKey(self.getMainHandItem().getItem()).getPath().equals("diamond_spear");
 	}
 }

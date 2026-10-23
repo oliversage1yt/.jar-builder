@@ -118,7 +118,23 @@ public final class ArenaBoss {
 	private static final int PHASE_FANGS = 2;
 	/** Ticks between fang attacks (a vanilla Evoker waits several seconds). */
 	private static final int FANG_COOLDOWN_TICKS = 24;
-	private static final double FANG_RANGE = 40.0;
+	/**
+	 * Farther than this from its target the boss stops casting fangs and throws spears instead. The longest fang line reaches
+	 * 20 blocks (16 fangs, 1.25 blocks apart), so this is where its fangs stop being able to hurt.
+	 */
+	private static final double FANG_RANGE = 22.0;
+	/** Fang phase, target out of fang range: a diamond spear every 3 seconds (the first after a short wind-up with the spear raised). */
+	private static final int SPEAR_COOLDOWN_TICKS = 60;
+	private static final int SPEAR_FIRST_DELAY_TICKS = 20;
+	private static final float SPEAR_DAMAGE = 8.0F;
+	/** Blocks per tick, and downward pull per tick (the aim is raised to make up for the drop). */
+	private static final double SPEAR_SPEED = 2.2;
+	private static final double SPEAR_GRAVITY = 0.03;
+	private static final int SPEAR_MAX_AGE = 100;
+	private static final String SPEAR_TAG = "sky_islands_spear";
+	/** Regeneration: after this long without taking damage the boss heals every REGEN_INTERVAL ticks (amount: config arenaBossRegen). */
+	private static final int REGEN_AFTER_HIT_TICKS = 200;
+	private static final int REGEN_INTERVAL_TICKS = 40;
 	/**
 	 * Arrow phase failsafe: after this long without a clear line of sight to its target (unseen adds 1 per tick, seen removes 2,
 	 * like the axe phase's reach timer) the boss rains arrows on every nearby player.
@@ -188,6 +204,13 @@ public final class ArenaBoss {
 		int windWarn;
 		/** Players hit by a gust and the ticks left in which they are kept fully vulnerable to the landing. */
 		final Map<UUID, Integer> windLaunched = new HashMap<>();
+		/** Fang phase, target out of fang range: holding a spear raised, and ticks until the next throw. */
+		boolean holdingSpear;
+		int spearCooldown;
+		/** Regeneration: health at the last tick (to notice damage), ticks since the last damage, ticks since the last heal. */
+		float lastHealth = -1.0F;
+		int sinceHitTicks;
+		int regenTimer;
 
 		Boss(Mob mob, ServerBossEvent bar, BlockPos home) {
 			this.mob = mob;
@@ -244,6 +267,13 @@ public final class ArenaBoss {
 			}
 		});
 
+		// A spear's display entity left over from before a restart or a crash would hang in the air forever.
+		ServerEntityEvents.ENTITY_LOAD.register((entity, level) -> {
+			if (!SPEAR_IDS.contains(entity.getUUID()) && tagsOf(entity).contains(SPEAR_TAG)) {
+				entity.discard();
+			}
+		});
+
 		ServerLivingEntityEvents.AFTER_DEATH.register((entity, source) -> {
 			if (tagsOf(entity).contains(BOSS_TAG) && entity.level() instanceof ServerLevel level) {
 				onDeath(level, entity);
@@ -252,6 +282,8 @@ public final class ArenaBoss {
 	}
 
 	public static void clear() {
+		SPEARS.clear();
+		SPEAR_IDS.clear();
 		SCANNED.clear();
 		MARKERS.clear();
 
@@ -287,6 +319,7 @@ public final class ArenaBoss {
 
 		if (!bossesFailed) {
 			try {
+				tickSpears();
 				tickBosses();
 			} catch (Throwable t) {
 				bossesFailed = true;
@@ -606,6 +639,7 @@ public final class ArenaBoss {
 			}
 
 			keepFocus(level, boss);
+			tickRegen(level, boss);
 
 			int wanted = phaseFor(mob);
 
@@ -619,6 +653,7 @@ public final class ArenaBoss {
 				tickArrowRain(level, boss);
 			} else if (boss.phase == PHASE_FANGS) {
 				tickWind(level, boss);
+				tickSpearThrow(level, boss);
 			}
 
 			if (boss.enraged && --boss.fangCooldown <= 0) {
@@ -726,6 +761,217 @@ public final class ArenaBoss {
 					x, y + 0.5, z, vx, -RAIN_SPEED, vz, owner));
 			level.sendParticles(ParticleTypes.LARGE_SMOKE, x, y + 0.5, z, 2, 0.1, 0.1, 0.1, 0.01);
 		}
+	}
+
+	// ------------------------------------------------------------------ regeneration (all phases)
+
+	/** A boss that has not been hurt for 10 seconds heals a few points every 2 seconds, until it is hit again. */
+	private static void tickRegen(ServerLevel level, Boss boss) {
+		Mob mob = boss.mob;
+		float health = mob.getHealth();
+
+		if (boss.lastHealth >= 0.0F && health < boss.lastHealth - 0.001F) {
+			boss.sinceHitTicks = 0;
+			boss.regenTimer = 0;
+		} else {
+			boss.sinceHitTicks++;
+		}
+
+		if (CommonConfig.arenaBossRegen > 0.0 && boss.sinceHitTicks >= REGEN_AFTER_HIT_TICKS && health < mob.getMaxHealth()) {
+			if (++boss.regenTimer >= REGEN_INTERVAL_TICKS) {
+				boss.regenTimer = 0;
+				mob.heal((float) CommonConfig.arenaBossRegen);
+				level.sendParticles(ParticleTypes.HEART, mob.getX(), mob.getY() + mob.getBbHeight() + 0.3, mob.getZ(), 4, 0.4, 0.2, 0.4, 0.0);
+			}
+		} else {
+			boss.regenTimer = 0;
+		}
+
+		boss.lastHealth = mob.getHealth();
+	}
+
+	// ------------------------------------------------------------------ thrown spears (fang phase)
+
+	/** One spear in flight: the display entity is only the picture, the flight and the hits are worked out here. */
+	private static final class Spear {
+		final ServerLevel level;
+		final UUID id;
+		final UUID owner;
+		double x;
+		double y;
+		double z;
+		final double vx;
+		double vy;
+		final double vz;
+		int age;
+
+		Spear(ServerLevel level, UUID id, UUID owner, double x, double y, double z, double vx, double vy, double vz) {
+			this.level = level;
+			this.id = id;
+			this.owner = owner;
+			this.x = x;
+			this.y = y;
+			this.z = z;
+			this.vx = vx;
+			this.vy = vy;
+			this.vz = vz;
+		}
+	}
+
+	private static final List<Spear> SPEARS = new ArrayList<>();
+	private static final Set<UUID> SPEAR_IDS = new HashSet<>();
+
+	/**
+	 * While the target is farther away than the fangs reach, the boss holds a diamond spear raised (the same arm pose as the
+	 * axe, see IllusionerAxePoseMixin) and throws it every 3 seconds, with the arm swing as the throw.
+	 */
+	private static void tickSpearThrow(ServerLevel level, Boss boss) {
+		Mob mob = boss.mob;
+		LivingEntity target = mob.getTarget();
+		boolean far = target != null && target.isAlive() && mob.distanceToSqr(target) > FANG_RANGE * FANG_RANGE;
+
+		if (!far) {
+			if (boss.holdingSpear) {
+				boss.holdingSpear = false;
+				setMainHand(level, mob, "minecraft:air");
+				mob.setAggressive(false);
+			}
+
+			boss.spearCooldown = SPEAR_FIRST_DELAY_TICKS;
+			return;
+		}
+
+		if (!boss.holdingSpear) {
+			boss.holdingSpear = true;
+			setMainHand(level, mob, "minecraft:diamond_spear");
+		}
+
+		// "Aggressive" is what makes the model show the held item in the raised-arm pose.
+		mob.setAggressive(true);
+		mob.getLookControl().setLookAt(target, 30.0F, 30.0F);
+
+		if (--boss.spearCooldown > 0) {
+			return;
+		}
+
+		boss.spearCooldown = SPEAR_COOLDOWN_TICKS;
+		throwSpear(level, mob, target);
+	}
+
+	private static void throwSpear(ServerLevel level, Mob mob, LivingEntity target) {
+		double fromX = mob.getX();
+		double fromY = mob.getEyeY() - 0.1;
+		double fromZ = mob.getZ();
+		double toX = target.getX();
+		double toY = target.getY() + target.getBbHeight() * 0.6;
+		double toZ = target.getZ();
+
+		// Aim a little high to make up for the drop on the way.
+		double flight = Math.sqrt((toX - fromX) * (toX - fromX) + (toY - fromY) * (toY - fromY) + (toZ - fromZ) * (toZ - fromZ)) / SPEAR_SPEED;
+		toY += SPEAR_GRAVITY * flight * (flight + 1.0) / 2.0;
+
+		double dx = toX - fromX;
+		double dy = toY - fromY;
+		double dz = toZ - fromZ;
+		double length = Math.sqrt(dx * dx + dy * dy + dz * dz);
+
+		if (length < 1.0E-4) {
+			return;
+		}
+
+		dx /= length;
+		dy /= length;
+		dz /= length;
+
+		double x = fromX + dx;
+		double y = fromY + dy;
+		double z = fromZ + dz;
+		UUID id = UUID.randomUUID();
+		SPEAR_IDS.add(id);
+
+		command(level, quietSource(level), String.format(Locale.ROOT,
+				"summon minecraft:item_display %.2f %.2f %.2f {UUID:%s,Tags:[\"%s\"],item:{id:\"minecraft:diamond_spear\",count:1},item_display:\"fixed\",billboard:\"center\",teleport_duration:1,"
+						+ "transformation:{translation:[0f,0f,0f],left_rotation:[0f,0f,0f,1f],scale:[1.6f,1.6f,1.6f],right_rotation:[0f,0f,0f,1f]}}",
+				x, y, z, uuidNbt(id), SPEAR_TAG));
+		command(level, quietSource(level), String.format(Locale.ROOT, "playsound minecraft:item.trident.throw hostile @a %.1f %.1f %.1f 3.0 0.8", fromX, fromY, fromZ));
+		swingArm(mob);
+
+		SPEARS.add(new Spear(level, id, mob.getUUID(), x, y, z, dx * SPEAR_SPEED, dy * SPEAR_SPEED, dz * SPEAR_SPEED));
+	}
+
+	/** Moves every spear in flight, a short step at a time so nothing is skipped over: hits a player, a block, or falls out of the sky. */
+	private static void tickSpears() {
+		Iterator<Spear> it = SPEARS.iterator();
+
+		while (it.hasNext()) {
+			Spear spear = it.next();
+
+			if (!advanceSpear(spear)) {
+				it.remove();
+				SPEAR_IDS.remove(spear.id);
+				command(spear.level, quietSource(spear.level), "kill " + spear.id);
+			}
+		}
+	}
+
+	/** Returns false when the spear is done (hit something or too old). */
+	private static boolean advanceSpear(Spear spear) {
+		ServerLevel level = spear.level;
+
+		if (++spear.age > SPEAR_MAX_AGE) {
+			return false;
+		}
+
+		spear.vy -= SPEAR_GRAVITY;
+
+		double length = Math.sqrt(spear.vx * spear.vx + spear.vy * spear.vy + spear.vz * spear.vz);
+		int steps = Math.max(1, (int) Math.ceil(length / 0.4));
+
+		for (int i = 1; i <= steps; i++) {
+			double px = spear.x + spear.vx * i / steps;
+			double py = spear.y + spear.vy * i / steps;
+			double pz = spear.z + spear.vz * i / steps;
+			BlockPos block = new BlockPos((int) Math.floor(px), (int) Math.floor(py), (int) Math.floor(pz));
+
+			if (!level.hasChunkAt(block)) {
+				return false;
+			}
+
+			for (ServerPlayer player : level.players()) {
+				if (player.isAlive() && !player.isSpectator() && player.getBoundingBox().inflate(0.3).contains(px, py, pz)) {
+					spearHit(level, spear, player, px, py, pz);
+					return false;
+				}
+			}
+
+			if (!level.getBlockState(block).getCollisionShape(level, block).isEmpty()) {
+				level.sendParticles(ParticleTypes.CRIT, px, py, pz, 8, 0.15, 0.15, 0.15, 0.2);
+				command(level, quietSource(level), String.format(Locale.ROOT, "playsound minecraft:item.trident.hit_ground hostile @a %.1f %.1f %.1f 1.5 1.0", px, py, pz));
+				return false;
+			}
+		}
+
+		spear.x += spear.vx;
+		spear.y += spear.vy;
+		spear.z += spear.vz;
+		command(level, quietSource(level), String.format(Locale.ROOT, "tp %s %.3f %.3f %.3f", spear.id, spear.x, spear.y, spear.z));
+		return true;
+	}
+
+	private static void spearHit(ServerLevel level, Spear spear, ServerPlayer player, double x, double y, double z) {
+		level.sendParticles(ParticleTypes.CRIT, x, y, z, 12, 0.2, 0.2, 0.2, 0.3);
+
+		// A raised shield facing the spear stops it, like it stops an arrow.
+		double yaw = Math.toRadians(player.getYRot());
+		double facing = -Math.sin(yaw) * -spear.vx + Math.cos(yaw) * -spear.vz;
+
+		if (player.isBlocking() && facing > 0.0) {
+			command(level, quietSource(level), String.format(Locale.ROOT, "playsound minecraft:item.shield.block player @a %.1f %.1f %.1f 1.0 1.0", x, y, z));
+			return;
+		}
+
+		command(level, quietSource(level), String.format(Locale.ROOT, "playsound minecraft:item.trident.hit hostile @a %.1f %.1f %.1f 2.0 1.0", x, y, z));
+		command(level, quietSource(level), String.format(Locale.ROOT, "damage %s %.1f minecraft:mob_projectile by %s", player.getUUID(), SPEAR_DAMAGE, spear.owner));
 	}
 
 	// ------------------------------------------------------------------ wind gusts (fang phase)
@@ -933,6 +1179,8 @@ public final class ArenaBoss {
 		boss.windCooldown = WIND_FIRST_DELAY_TICKS;
 		boss.windWarn = 0;
 		boss.windLaunched.clear();
+		boss.holdingSpear = false;
+		boss.spearCooldown = SPEAR_FIRST_DELAY_TICKS;
 		setBowInterval(boss, BOW_INTERVAL_NORMAL);
 
 		if (phase == PHASE_AXE) {
