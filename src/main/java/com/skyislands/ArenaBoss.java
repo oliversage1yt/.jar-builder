@@ -119,6 +119,29 @@ public final class ArenaBoss {
 	/** Ticks between fang attacks (a vanilla Evoker waits several seconds). */
 	private static final int FANG_COOLDOWN_TICKS = 24;
 	private static final double FANG_RANGE = 40.0;
+	/**
+	 * Arrow phase failsafe: after this long without a clear line of sight to its target (unseen adds 1 per tick, seen removes 2,
+	 * like the axe phase's reach timer) the boss rains arrows on every nearby player.
+	 */
+	private static final int RAIN_TRIGGER_TICKS = 40;
+	/** The rain lasts 10 to 20 ticks and drops one arrow per tick on each player, so every player gets 10 to 20 arrows. */
+	private static final int RAIN_MIN_ARROWS = 10;
+	private static final int RAIN_MAX_ARROWS = 20;
+	/** Players this close to the boss are rained on; arrows land within this radius of the player and start this high above them. */
+	private static final double RAIN_RANGE = 40.0;
+	private static final double RAIN_RADIUS = 3.0;
+	private static final int RAIN_HEIGHT = 12;
+	private static final double RAIN_SPEED = 1.4;
+
+	/** Fang phase: gusts launch nearby players. First one after a short delay, then every 10 to 15 seconds; each is announced first. */
+	private static final int WIND_FIRST_DELAY_TICKS = 120;
+	private static final int WIND_MIN_COOLDOWN_TICKS = 200;
+	private static final int WIND_MAX_COOLDOWN_TICKS = 300;
+	private static final int WIND_WARN_TICKS = 20;
+	private static final double WIND_RANGE = 24.0;
+	/** Upward speed (blocks per tick) that carries a player about 10 blocks up (normal player drag and gravity). Fall damage is untouched. */
+	private static final double WIND_LAUNCH_SPEED = 1.34;
+
 	/** Chance that the boss drops a random enchanted book. */
 	private static final float BOOK_CHANCE = 0.9F;
 
@@ -155,6 +178,12 @@ public final class ArenaBoss {
 		int unreachableTicks;
 		/** The last player the boss was fighting; re-targeted when the AI drops it (e.g. a pillar blocks line of sight). */
 		LivingEntity focus;
+		/** Arrow phase: how long the target has been out of sight, and how many ticks of arrow rain are left. */
+		int noSightTicks;
+		int rainLeft;
+		/** Fang phase: ticks until the next gust, and ticks left of the warning before it hits. */
+		int windCooldown;
+		int windWarn;
 
 		Boss(Mob mob, ServerBossEvent bar, BlockPos home) {
 			this.mob = mob;
@@ -582,6 +611,10 @@ public final class ArenaBoss {
 
 			if (boss.phase == PHASE_AXE) {
 				tickAxe(level, boss);
+			} else if (boss.phase == PHASE_BOW) {
+				tickArrowRain(level, boss);
+			} else if (boss.phase == PHASE_FANGS) {
+				tickWind(level, boss);
 			}
 
 			if (boss.enraged && --boss.fangCooldown <= 0) {
@@ -609,6 +642,194 @@ public final class ArenaBoss {
 				level.playSound(null, boss.home, SoundEvents.ENDERMAN_TELEPORT, SoundSource.HOSTILE, 1.0F, 0.8F);
 				level.sendParticles(ParticleTypes.LARGE_SMOKE, boss.home.getX() + 0.5, boss.home.getY() + 1.0, boss.home.getZ() + 0.5, 20, 0.4, 0.6, 0.4, 0.03);
 			}
+		}
+	}
+
+	// ------------------------------------------------------------------ arrow rain (bow phase)
+
+	/**
+	 * Bow phase failsafe against hiding: when the boss cannot see its target for {@link #RAIN_TRIGGER_TICKS} (a pillar, a shelter,
+	 * a spot it cannot shoot at), arrows rain down on every nearby player instead.
+	 */
+	private static void tickArrowRain(ServerLevel level, Boss boss) {
+		Mob mob = boss.mob;
+
+		if (boss.rainLeft > 0) {
+			boss.rainLeft--;
+			dropRainArrows(level, mob);
+			return;
+		}
+
+		LivingEntity target = mob.getTarget();
+
+		if (target == null || !target.isAlive()) {
+			boss.noSightTicks = 0;
+			return;
+		}
+
+		if (mob.hasLineOfSight(target)) {
+			boss.noSightTicks = Math.max(0, boss.noSightTicks - 2);
+		} else {
+			boss.noSightTicks = Math.min(RAIN_TRIGGER_TICKS, boss.noSightTicks + 1);
+		}
+
+		if (boss.noSightTicks >= RAIN_TRIGGER_TICKS) {
+			boss.noSightTicks = 0;
+			boss.rainLeft = RAIN_MIN_ARROWS + mob.getRandom().nextInt(RAIN_MAX_ARROWS - RAIN_MIN_ARROWS + 1);
+			level.playSound(null, mob.blockPosition(), SoundEvents.EVOKER_PREPARE_ATTACK, SoundSource.HOSTILE, 2.0F, 0.8F);
+			level.sendParticles(ParticleTypes.LARGE_SMOKE, mob.getX(), mob.getY() + 1.5, mob.getZ(), 30, 0.5, 0.7, 0.5, 0.04);
+			SkyIslands.LOGGER.info("Arena boss lost sight of its target: raining {} arrows on nearby players", boss.rainLeft);
+		}
+	}
+
+	/** One arrow above each nearby player, somewhere within {@link #RAIN_RADIUS} blocks of them, falling straight down. */
+	private static void dropRainArrows(ServerLevel level, Mob mob) {
+		var random = mob.getRandom();
+		String owner = uuidNbt(mob.getUUID());
+
+		for (ServerPlayer player : level.players()) {
+			if (!player.isAlive() || player.isSpectator() || mob.distanceToSqr(player) > RAIN_RANGE * RAIN_RANGE) {
+				continue;
+			}
+
+			double angle = random.nextDouble() * Math.PI * 2.0;
+			double radius = RAIN_RADIUS * Math.sqrt(random.nextDouble());
+			double x = player.getX() + Math.cos(angle) * radius;
+			double z = player.getZ() + Math.sin(angle) * radius;
+			int bx = (int) Math.floor(x);
+			int bz = (int) Math.floor(z);
+			int base = (int) Math.floor(player.getY()) + 2;
+
+			if (!level.hasChunkAt(new BlockPos(bx, base, bz)) || !level.getBlockState(new BlockPos(bx, base, bz)).isAir()) {
+				continue; // roof or wall right above this spot
+			}
+
+			// As high as the open air above the player reaches (a ceiling stops the rain), at most RAIN_HEIGHT.
+			int y = base;
+
+			while (y < base + RAIN_HEIGHT && level.getBlockState(new BlockPos(bx, y + 1, bz)).isAir()) {
+				y++;
+			}
+
+			if (y - player.getY() < 3.0) {
+				continue;
+			}
+
+			double vx = (random.nextDouble() - 0.5) * 0.1;
+			double vz = (random.nextDouble() - 0.5) * 0.1;
+			command(level, quietSource(level), String.format(Locale.ROOT,
+					"summon minecraft:arrow %.2f %.2f %.2f {Motion:[%.3f,%.3f,%.3f],Owner:%s,pickup:0b}",
+					x, y + 0.5, z, vx, -RAIN_SPEED, vz, owner));
+			level.sendParticles(ParticleTypes.LARGE_SMOKE, x, y + 0.5, z, 2, 0.1, 0.1, 0.1, 0.01);
+		}
+	}
+
+	// ------------------------------------------------------------------ wind gusts (fang phase)
+
+	private static Field motionSyncField;
+	private static boolean motionSyncLookedUp;
+
+	/** Every so often, with a short warning, a wind charge burst throws each nearby player about 10 blocks into the air. */
+	private static void tickWind(ServerLevel level, Boss boss) {
+		Mob mob = boss.mob;
+
+		if (boss.windWarn > 0) {
+			boss.windWarn--;
+
+			for (ServerPlayer player : windTargets(level, mob)) {
+				level.sendParticles(ParticleTypes.END_ROD, player.getX(), player.getY() + 0.1, player.getZ(), 4, 0.5, 0.05, 0.5, 0.03);
+			}
+
+			if (boss.windWarn == 0) {
+				for (ServerPlayer player : windTargets(level, mob)) {
+					gust(level, mob, player);
+				}
+
+				boss.windCooldown = WIND_MIN_COOLDOWN_TICKS + mob.getRandom().nextInt(WIND_MAX_COOLDOWN_TICKS - WIND_MIN_COOLDOWN_TICKS + 1);
+			}
+
+			return;
+		}
+
+		if (--boss.windCooldown > 0) {
+			return;
+		}
+
+		if (windTargets(level, mob).isEmpty()) {
+			boss.windCooldown = 40;
+			return;
+		}
+
+		boss.windWarn = WIND_WARN_TICKS;
+		command(level, quietSource(level), String.format(Locale.ROOT, "playsound minecraft:entity.breeze.charge hostile @a %.1f %.1f %.1f 2.0 1.0", mob.getX(), mob.getY(), mob.getZ()));
+	}
+
+	private static List<ServerPlayer> windTargets(ServerLevel level, Mob mob) {
+		List<ServerPlayer> targets = new ArrayList<>();
+
+		for (ServerPlayer player : level.players()) {
+			if (player.isAlive() && !player.isSpectator() && mob.distanceToSqr(player) <= WIND_RANGE * WIND_RANGE) {
+				targets.add(player);
+			}
+		}
+
+		return targets;
+	}
+
+	/** The wind charge burst itself: the burst effects at the player's feet, then the launch. */
+	private static void gust(ServerLevel level, Mob mob, ServerPlayer player) {
+		CommandSourceStack source = quietSource(level);
+		command(level, source, String.format(Locale.ROOT, "particle minecraft:gust_emitter_large %.2f %.2f %.2f", player.getX(), player.getY() + 0.2, player.getZ()));
+		command(level, source, String.format(Locale.ROOT, "playsound minecraft:entity.wind_charge.wind_burst hostile @a %.2f %.2f %.2f 2.0 1.0", player.getX(), player.getY(), player.getZ()));
+
+		if (!launch(player, WIND_LAUNCH_SPEED)) {
+			// Could not push the player directly: fall back to two real wind charges bursting at their feet.
+			for (int i = 0; i < 2; i++) {
+				command(level, source, String.format(Locale.ROOT, "summon minecraft:wind_charge %.2f %.2f %.2f {Motion:[0.0,-1.0,0.0],Owner:%s}",
+						player.getX(), player.getY() + 0.3, player.getZ(), uuidNbt(mob.getUUID())));
+			}
+		}
+	}
+
+	/**
+	 * Throws the player straight up and tells their client about it. The flag that makes the server send the new motion has
+	 * had two names, so it is found by reflection; returns false when it cannot be found.
+	 */
+	private static boolean launch(ServerPlayer player, double upwardSpeed) {
+		if (!motionSyncLookedUp) {
+			motionSyncLookedUp = true;
+
+			for (String name : new String[] {"hurtMarked", "needsSync"}) {
+				try {
+					Field f = Entity.class.getDeclaredField(name);
+
+					if (f.getType() == boolean.class) {
+						f.setAccessible(true);
+						motionSyncField = f;
+						break;
+					}
+				} catch (NoSuchFieldException | RuntimeException ignored) {
+					// try the next name
+				}
+			}
+
+			if (motionSyncField == null) {
+				SkyIslands.LOGGER.warn("Sky Islands could not find the entity motion sync flag; wind gusts use real wind charges instead");
+			}
+		}
+
+		if (motionSyncField == null) {
+			return false;
+		}
+
+		try {
+			player.setDeltaMovement(new Vec3(0.0, upwardSpeed, 0.0));
+			motionSyncField.setBoolean(player, true);
+			return true;
+		} catch (ReflectiveOperationException | RuntimeException e) {
+			motionSyncField = null;
+			SkyIslands.LOGGER.warn("Sky Islands could not launch a player directly; wind gusts use real wind charges instead", e);
+			return false;
 		}
 	}
 
@@ -654,6 +875,10 @@ public final class ArenaBoss {
 
 		boss.shooting = false;
 		boss.unreachableTicks = 0;
+		boss.noSightTicks = 0;
+		boss.rainLeft = 0;
+		boss.windCooldown = WIND_FIRST_DELAY_TICKS;
+		boss.windWarn = 0;
 		setBowInterval(boss, BOW_INTERVAL_NORMAL);
 
 		if (phase == PHASE_AXE) {

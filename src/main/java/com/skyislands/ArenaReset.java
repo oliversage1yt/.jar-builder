@@ -1,6 +1,7 @@
 package com.skyislands;
 
 import java.io.IOException;
+import java.util.ArrayDeque;
 import java.util.Arrays;
 import java.util.Locale;
 import java.util.Optional;
@@ -21,8 +22,10 @@ import net.minecraft.world.level.block.state.properties.Property;
  * Puts the lower part of the boss arena back the way it generated, every time the boss is respawned.
  *
  * <p>"Lower part" is the fighting pit: everything from the bottom of the arena up to {@link #LOWER_TOP_ABOVE_ALTAR} blocks
- * above the altar (the floor the boss stands on). Everything above that (the roof ring and towers) is never touched, so
- * blocks players place or break up there stay as they are.
+ * above the altar (the floor the boss stands on). The columns directly above the middle of the pit (the opening in the roof
+ * ring) are cleared much higher, up to {@link #TALL_TOP_ABOVE_ALTAR} blocks above the altar, so nothing can be built up there
+ * to hide from the boss. Everything else above the lower part (the roof ring and towers) is never touched, so blocks players
+ * place or break there stay as they are.
  *
  * <p>The reference is the arena's own structure file ({@link ArenaTemplate}). The arena was placed with a random rotation,
  * so the job first tries all four rotations around the altar and keeps the one that matches the world best; if even the
@@ -33,6 +36,8 @@ import net.minecraft.world.level.block.state.properties.Property;
 final class ArenaReset {
 	/** The lower part reaches this many blocks above the altar block (the roof ring of the arena starts one block higher). */
 	static final int LOWER_TOP_ABOVE_ALTAR = 5;
+	/** Directly above the middle of the pit (the opening in the roof ring) the arena is cleared this high above the altar. */
+	static final int TALL_TOP_ABOVE_ALTAR = 30;
 
 	/** Cells looked at, and blocks changed, per tick while the reset is spread out. */
 	private static final int EXAMINE_PER_TICK = 1500;
@@ -297,6 +302,56 @@ final class ArenaReset {
 		try {
 			ArenaTemplate t = ArenaTemplate.load();
 			int total = t.size();
+			int airIndex = -1;
+
+			for (int i = 0; i < t.palette.length && airIndex < 0; i++) {
+				if (t.palette[i].equals("minecraft:air")) {
+					airIndex = i;
+				}
+			}
+
+			// ---- the columns directly above the centre of the pit: open to the sky (nothing of the template above the lower part)
+			// and connected to the altar. Those are cleared much higher up than the rest of the lower arena.
+			int radius = 0;
+
+			for (int i = 0; i < total; i++) {
+				radius = Math.max(radius, Math.max(Math.abs(t.dx[i]), Math.abs(t.dz[i])));
+			}
+
+			int width = radius * 2 + 1;
+			boolean[][] roofed = new boolean[width][width];
+
+			for (int i = 0; i < total; i++) {
+				if (t.dy[i] > LOWER_TOP_ABOVE_ALTAR && !t.palette[t.state[i]].equals("minecraft:air")) {
+					roofed[t.dx[i] + radius][t.dz[i] + radius] = true;
+				}
+			}
+
+			boolean[][] open = new boolean[width][width];
+			ArrayDeque<int[]> queue = new ArrayDeque<>();
+			int openColumns = 0;
+
+			if (airIndex >= 0 && !roofed[radius][radius]) {
+				open[radius][radius] = true;
+				queue.add(new int[] {radius, radius});
+			}
+
+			while (!queue.isEmpty()) {
+				int[] c = queue.poll();
+				openColumns++;
+
+				for (int[] step : new int[][] {{1, 0}, {-1, 0}, {0, 1}, {0, -1}}) {
+					int nx = c[0] + step[0];
+					int nz = c[1] + step[1];
+
+					if (nx >= 0 && nz >= 0 && nx < width && nz < width && !roofed[nx][nz] && !open[nx][nz]) {
+						open[nx][nz] = true;
+						queue.add(new int[] {nx, nz});
+					}
+				}
+			}
+
+			int extraLayers = TALL_TOP_ABOVE_ALTAR - LOWER_TOP_ABOVE_ALTAR;
 			int count = 0;
 
 			for (int i = 0; i < total; i++) {
@@ -305,14 +360,41 @@ final class ArenaReset {
 				}
 			}
 
-			// Bottom layer first, so the restoring sweeps upwards: sort by (y, x, z), with the cell's index packed in the low bits.
-			long[] keys = new long[count];
+			count += openColumns * extraLayers;
+
+			int[] sx = new int[count];
+			int[] sy = new int[count];
+			int[] sz = new int[count];
+			int[] ss = new int[count];
 			int k = 0;
 
 			for (int i = 0; i < total; i++) {
 				if (t.dy[i] <= LOWER_TOP_ABOVE_ALTAR) {
-					keys[k++] = ((long) (t.dy[i] + 64) << 48) | ((long) (t.dx[i] + 64) << 40) | ((long) (t.dz[i] + 64) << 32) | i;
+					sx[k] = t.dx[i];
+					sy[k] = t.dy[i];
+					sz[k] = t.dz[i];
+					ss[k++] = t.state[i];
 				}
+			}
+
+			for (int x = 0; x < width; x++) {
+				for (int z = 0; z < width; z++) {
+					if (open[x][z]) {
+						for (int dy = LOWER_TOP_ABOVE_ALTAR + 1; dy <= TALL_TOP_ABOVE_ALTAR; dy++) {
+							sx[k] = x - radius;
+							sy[k] = dy;
+							sz[k] = z - radius;
+							ss[k++] = airIndex;
+						}
+					}
+				}
+			}
+
+			// Bottom layer first, so the restoring sweeps upwards: sort by (y, x, z), with the cell's index packed in the low bits.
+			long[] keys = new long[count];
+
+			for (int i = 0; i < count; i++) {
+				keys[i] = ((long) (sy[i] + 64) << 48) | ((long) (sx[i] + 64) << 40) | ((long) (sz[i] + 64) << 32) | i;
 			}
 
 			Arrays.sort(keys);
@@ -323,21 +405,22 @@ final class ArenaReset {
 
 			for (int i = 0; i < count; i++) {
 				int src = (int) (keys[i] & 0xFFFFFFFFL);
-				cx[i] = t.dx[src];
-				cy[i] = t.dy[src];
-				cz[i] = t.dz[src];
-				cs[i] = t.state[src];
+				cx[i] = sx[src];
+				cy[i] = sy[src];
+				cz[i] = sz[src];
+				cs[i] = ss[src];
 			}
 
 			cells = count;
 			template = t;
 
+			// Share of the arena's own solid blocks that must be in place; the cleared-to-air cells above the pit do not count.
 			int solid = 0;
 
 			for (int i = 0; i < count; i++) {
-				String s = t.palette[cs[i]];
+				String name = t.palette[cs[i]];
 
-				if (!s.equals("minecraft:air") && !(cx[i] == 0 && cy[i] == 0 && cz[i] == 0)) {
+				if (cy[i] <= LOWER_TOP_ABOVE_ALTAR && !name.equals("minecraft:air") && !(cx[i] == 0 && cy[i] == 0 && cz[i] == 0)) {
 					solid++;
 				}
 			}
