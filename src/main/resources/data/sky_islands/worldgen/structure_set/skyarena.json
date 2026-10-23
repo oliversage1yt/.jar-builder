@@ -7,7 +7,11 @@
   },
   "structures": [
     {
-      "structure": "sky_islands:skyarena",
+      "structure": "sky_islands:skyarena_chest",
+      "weight": 1
+    },
+    {
+      "structure": "sky_islands:skyarena_fight",
       "weight": 1
     }
   ]

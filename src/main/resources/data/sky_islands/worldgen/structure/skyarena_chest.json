@@ -2,7 +2,7 @@
   "type": "minecraft:jigsaw",
   "biomes": "#sky_islands:temperate",
   "step": "top_layer_modification",
-  "start_pool": "sky_islands:skyarena",
+  "start_pool": "sky_islands:skyarena_chest",
   "size": 1,
   "start_height": {
     "type": "minecraft:trapezoid",

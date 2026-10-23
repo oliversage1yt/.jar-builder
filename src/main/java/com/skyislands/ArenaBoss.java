@@ -48,8 +48,8 @@ import net.minecraft.world.phys.Vec3;
  *
  * <p>How it fits together:
  * <ul>
- * <li>Worldgen (data only) swaps the arena's chest for an invisible {@code barrier} "marker" block half of the time
- * (see worldgen/template_pool/skyarena.json). The marker is the persistent record that a boss is waiting there.</li>
+ * <li>Worldgen (data only) swaps the chest of the {@code skyarena_fight} structure for an invisible {@code barrier} "marker" block (the {@code skyarena_chest} structure keeps its chest)
+ * (see worldgen/template_pool/skyarena_fight.json). The marker is the persistent record that a boss is waiting there.</li>
  * <li>Every few ticks, chunks near players are scanned once for markers. A marker puffs black smoke; when a player comes
  * within {@link #TRIGGER_RANGE} blocks the marker is removed, a spawn sound plays and the Illusioner appears.</li>
  * <li>The boss is tagged, so it is re-adopted (boss bar, home position) after a world reload.</li>
