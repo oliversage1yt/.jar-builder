@@ -25,6 +25,8 @@ public final class CommonConfig {
 
 	/** Maximum health of the sky arena boss (a vanilla Illusioner has 32). */
 	public static double arenaBossHealth = 200.0;
+	/** Respawning the boss puts the lower part of the arena (where the boss fights) back as it generated; the upper part keeps player changes. */
+	public static boolean arenaResetOnRespawn = true;
 
 	public static void load() {
 		Path file = FabricLoader.getInstance().getConfigDir().resolve("sky_islands.properties");
@@ -45,9 +47,12 @@ public final class CommonConfig {
 
 		arenaBossHealth = Math.max(1.0, dbl(p, "arenaBossHealth", arenaBossHealth));
 
+		arenaResetOnRespawn = bool(p, "arenaResetOnRespawn", arenaResetOnRespawn);
+
 		p.remove("arenaRespawnItems"); // setting from a previous version (the respawn item is now always a plain Book)
 
 		p.setProperty("arenaBossHealth", String.valueOf(arenaBossHealth));
+		p.setProperty("arenaResetOnRespawn", String.valueOf(arenaResetOnRespawn));
 		p.setProperty("lightThroughIslands", String.valueOf(lightThroughIslands));
 		p.setProperty("skyMaps", String.valueOf(skyMaps));
 		p.setProperty("naturalFluidsContained", String.valueOf(naturalFluidsContained));

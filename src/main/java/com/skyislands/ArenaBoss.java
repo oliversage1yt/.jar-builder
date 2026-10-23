@@ -614,11 +614,11 @@ public final class ArenaBoss {
 
 	// ------------------------------------------------------------------ fang phase
 
-	private static void command(ServerLevel level, CommandSourceStack source, String command) {
+	static void command(ServerLevel level, CommandSourceStack source, String command) {
 		level.getServer().getCommands().performPrefixedCommand(source, command);
 	}
 
-	private static CommandSourceStack quietSource(ServerLevel level) {
+	static CommandSourceStack quietSource(ServerLevel level) {
 		return level.getServer().createCommandSourceStack().withSuppressedOutput();
 	}
 
@@ -1048,10 +1048,11 @@ public final class ArenaBoss {
 
 	// ------------------------------------------------------------------ respawn ritual
 
-	/** Book rises slowly and spins (ticks), then shoots up (ticks), then the beam shines while the boss stands in it (ticks). */
+	/** Book rises slowly and spins (ticks), then shoots up (ticks); when it is gone the boss appears. */
 	private static final int RITUAL_RISE_TICKS = 70;
 	private static final int RITUAL_ZOOM_TICKS = 12;
-	private static final int RITUAL_BEAM_TICKS = 50;
+	/** The arena starts being put back this many ticks into the ritual (see {@link ArenaReset}); it is done before the book is gone. */
+	private static final int RESET_START_TICK = 8;
 	/** Interpolation steps of the book's animation (the client smooths each step). */
 	private static final int RISE_STEP_TICKS = 5;
 	private static final int ZOOM_STEP_TICKS = 3;
@@ -1062,22 +1063,16 @@ public final class ArenaBoss {
 	/** Spin: 90 degrees per interpolation step, so the client always turns the same way. */
 	private static final double SPIN_DEGREES_RISE = 18.0;
 	private static final double SPIN_DEGREES_ZOOM = 30.0;
-	/**
-	 * The beam is an end gateway's: it is drawn by the block's renderer (no sky or glass needed) for the first 200 ticks of
-	 * the gateway's life, growing and shrinking with a sine curve. Starting its Age here shows the near-full-size middle of
-	 * that curve (peak at tick 100) for the whole beam time.
-	 */
-	private static final int GATEWAY_START_AGE = 75;
-
 	private static final class Ritual {
 		final ServerLevel level;
 		final BlockPos altar;
 		final UUID display = UUID.randomUUID();
 		int age;
 		boolean displayGone;
-		/** The block under the altar that the end gateway temporarily replaces (null while no gateway is there). */
-		BlockState replaced;
 		boolean bossSpawned;
+		/** The arena reset of this ritual: started once, finished before the boss appears (null when there is nothing to reset). */
+		boolean resetBegun;
+		ArenaReset reset;
 
 		Ritual(ServerLevel level, BlockPos altar) {
 			this.level = level;
@@ -1282,30 +1277,22 @@ public final class ArenaBoss {
 			}
 		}
 
-		// ---- the book is gone, the beam shines and the boss is back
-		if (t == zoomEnd) {
-			killBook(r);
-			BlockPos above = r.altar.above();
-			BlockPos under = r.altar.below();
+		// ---- the lower arena is put back as it generated, a slice per tick (bottom to top) while the book rises
+		if (!r.resetBegun && t >= RESET_START_TICK) {
+			beginReset(r);
+		}
 
-			// The gateway replaces the plain block under the altar, so it is hidden and the altar stays solid for the boss.
-			if (level.getBlockEntity(under) == null && !level.getBlockState(under).isAir()) {
-				r.replaced = level.getBlockState(under);
-				command(level, quietSource(level), String.format(Locale.ROOT, "setblock %d %d %d minecraft:end_gateway{Age:%dL}", under.getX(), under.getY(), under.getZ(), GATEWAY_START_AGE));
-			}
+		if (r.reset != null && t < zoomEnd) {
+			r.reset.step();
+		}
+
+		// ---- the book is gone and the boss is back
+		if (t == zoomEnd) {
+			BlockPos above = r.altar.above();
 
 			level.playSound(null, r.altar, SoundEvents.EVOKER_CAST_SPELL, SoundSource.BLOCKS, 2.0F, 0.8F);
 			level.sendParticles(ParticleTypes.END_ROD, cx, above.getY() + 1.0, cz, 60, 0.5, 1.0, 0.5, 0.15);
-			spawnBoss(level, above);
-			r.bossSpawned = true;
-		}
-
-		if (t > zoomEnd && t % 3 == 0) {
-			level.sendParticles(ParticleTypes.ENCHANT, cx, r.altar.getY() + 2.0, cz, 6, 0.6, 1.2, 0.6, 0.0);
-		}
-
-		if (t >= zoomEnd + RITUAL_BEAM_TICKS) {
-			finishRitual(r);
+			finishRitual(r); // book gone, arena fully reset, then the boss
 			return true;
 		}
 
@@ -1319,23 +1306,38 @@ public final class ArenaBoss {
 		}
 	}
 
-	/** Cleans up a ritual (also used when the world is closing mid-ritual): book gone, blocks restored, boss present. */
+	/** Cleans up a ritual (also used when the world is closing mid-ritual): book gone, arena reset, boss present. */
 	private static void finishRitual(Ritual r) {
 		killBook(r);
 
-		if (r.replaced != null) {
-			BlockPos under = r.altar.below();
+		if (!r.resetBegun) {
+			beginReset(r);
+		}
 
-			if (BuiltInRegistries.BLOCK.getKey(r.level.getBlockState(under).getBlock()).getPath().equals("end_gateway")) {
-				r.level.setBlock(under, r.replaced, 3);
+		if (r.reset != null) {
+			ArenaReset reset = r.reset;
+			r.reset = null;
+
+			try {
+				reset.finish();
+			} catch (Throwable t) {
+				SkyIslands.LOGGER.warn("Sky Islands could not finish resetting the arena", t);
 			}
-
-			r.replaced = null;
 		}
 
 		if (!r.bossSpawned) {
 			r.bossSpawned = true;
 			spawnBoss(r.level, r.altar.above());
+		}
+	}
+
+	private static void beginReset(Ritual r) {
+		r.resetBegun = true;
+
+		try {
+			r.reset = ArenaReset.begin(r.level, r.altar);
+		} catch (Throwable t) {
+			SkyIslands.LOGGER.warn("Sky Islands could not start resetting the arena", t);
 		}
 	}
 
