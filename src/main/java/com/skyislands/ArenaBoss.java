@@ -139,8 +139,10 @@ public final class ArenaBoss {
 	private static final int WIND_MAX_COOLDOWN_TICKS = 300;
 	private static final int WIND_WARN_TICKS = 20;
 	private static final double WIND_RANGE = 24.0;
-	/** Upward speed (blocks per tick) that carries a player about 10 blocks up (normal player drag and gravity). Fall damage is untouched. */
-	private static final double WIND_LAUNCH_SPEED = 1.34;
+	/** Real wind charges burst at each player's feet (more charges, more height). */
+	private static final int WIND_CHARGES_PER_PLAYER = 1;
+	/** A launched player's "no fall damage after a wind charge" status is cleared for this long (until well after they land). */
+	private static final int WIND_FALL_WATCH_TICKS = 140;
 
 	/** Chance that the boss drops a random enchanted book. */
 	private static final float BOOK_CHANCE = 0.9F;
@@ -184,6 +186,8 @@ public final class ArenaBoss {
 		/** Fang phase: ticks until the next gust, and ticks left of the warning before it hits. */
 		int windCooldown;
 		int windWarn;
+		/** Players hit by a gust and the ticks left in which they are kept fully vulnerable to the landing. */
+		final Map<UUID, Integer> windLaunched = new HashMap<>();
 
 		Boss(Mob mob, ServerBossEvent bar, BlockPos home) {
 			this.mob = mob;
@@ -726,12 +730,16 @@ public final class ArenaBoss {
 
 	// ------------------------------------------------------------------ wind gusts (fang phase)
 
-	private static Field motionSyncField;
-	private static boolean motionSyncLookedUp;
+	private static boolean fallFlagReported;
 
-	/** Every so often, with a short warning, a wind charge burst throws each nearby player about 10 blocks into the air. */
+	/**
+	 * Every so often, with a short warning, real wind charges burst at the feet of each nearby player and throw them into the
+	 * air. The landing still hurts: see {@link #keepFallDamage}.
+	 */
 	private static void tickWind(ServerLevel level, Boss boss) {
 		Mob mob = boss.mob;
+
+		keepFallDamage(level, boss);
 
 		if (boss.windWarn > 0) {
 			boss.windWarn--;
@@ -742,7 +750,7 @@ public final class ArenaBoss {
 
 			if (boss.windWarn == 0) {
 				for (ServerPlayer player : windTargets(level, mob)) {
-					gust(level, mob, player);
+					burst(level, boss, player);
 				}
 
 				boss.windCooldown = WIND_MIN_COOLDOWN_TICKS + mob.getRandom().nextInt(WIND_MAX_COOLDOWN_TICKS - WIND_MIN_COOLDOWN_TICKS + 1);
@@ -776,61 +784,106 @@ public final class ArenaBoss {
 		return targets;
 	}
 
-	/** The wind charge burst itself: the burst effects at the player's feet, then the launch. */
-	private static void gust(ServerLevel level, Mob mob, ServerPlayer player) {
-		CommandSourceStack source = quietSource(level);
-		command(level, source, String.format(Locale.ROOT, "particle minecraft:gust_emitter_large %.2f %.2f %.2f", player.getX(), player.getY() + 0.2, player.getZ()));
-		command(level, source, String.format(Locale.ROOT, "playsound minecraft:entity.wind_charge.wind_burst hostile @a %.2f %.2f %.2f 2.0 1.0", player.getX(), player.getY(), player.getZ()));
+	/**
+	 * Drops real wind charges onto the ground right under the player's feet; they burst on the first tick and the vanilla
+	 * explosion does the launching. Players who are already high in the air (more than 4 blocks above the ground) are skipped.
+	 */
+	private static void burst(ServerLevel level, Boss boss, ServerPlayer player) {
+		BlockPos feet = player.blockPosition();
+		int surface = Integer.MIN_VALUE;
 
-		if (!launch(player, WIND_LAUNCH_SPEED)) {
-			// Could not push the player directly: fall back to two real wind charges bursting at their feet.
-			for (int i = 0; i < 2; i++) {
-				command(level, source, String.format(Locale.ROOT, "summon minecraft:wind_charge %.2f %.2f %.2f {Motion:[0.0,-1.0,0.0],Owner:%s}",
-						player.getX(), player.getY() + 0.3, player.getZ(), uuidNbt(mob.getUUID())));
+		for (int i = 0; i <= 4; i++) {
+			BlockPos below = feet.below(i);
+
+			if (!level.getBlockState(below).getCollisionShape(level, below).isEmpty()) {
+				surface = below.getY() + 1;
+				break;
+			}
+		}
+
+		if (surface == Integer.MIN_VALUE) {
+			return;
+		}
+
+		String owner = uuidNbt(boss.mob.getUUID());
+
+		for (int i = 0; i < WIND_CHARGES_PER_PLAYER; i++) {
+			command(level, quietSource(level), String.format(Locale.ROOT, "summon minecraft:wind_charge %.2f %.2f %.2f {Motion:[0.0,-1.0,0.0],Owner:%s}",
+					player.getX(), surface + 0.15, player.getZ(), owner));
+		}
+
+		boss.windLaunched.put(player.getUUID(), WIND_FALL_WATCH_TICKS);
+	}
+
+	/**
+	 * Vanilla explosions that throw a player (wind charges, and the mace's smash) also tell the game to ignore the fall damage
+	 * of that flight, so a wind charge normally makes the landing free. While a launched player is airborne this clears that
+	 * status every tick, so the fall from the full height hurts like any other fall. The status lives in the Player class
+	 * under names that are looked up by reflection; the first time, the log says whether it was found.
+	 */
+	private static void keepFallDamage(ServerLevel level, Boss boss) {
+		if (boss.windLaunched.isEmpty()) {
+			return;
+		}
+
+		Iterator<Map.Entry<UUID, Integer>> it = boss.windLaunched.entrySet().iterator();
+
+		while (it.hasNext()) {
+			Map.Entry<UUID, Integer> entry = it.next();
+			Player player = level.getPlayerByUUID(entry.getKey());
+			int left = entry.getValue() - 1;
+
+			if (player == null || !player.isAlive() || left <= 0) {
+				it.remove();
+				continue;
+			}
+
+			entry.setValue(left);
+			boolean found = clearImpulseFallImmunity(player);
+
+			if (!fallFlagReported) {
+				fallFlagReported = true;
+
+				if (found) {
+					SkyIslands.LOGGER.info("Wind gusts: the fall-damage immunity of wind charge launches is cleared, landings hurt");
+				} else {
+					SkyIslands.LOGGER.warn("Wind gusts: could not find the Player fall-damage immunity of explosion launches (ignoreFallDamageFromCurrentImpulse); landings may not hurt");
+				}
 			}
 		}
 	}
 
-	/**
-	 * Throws the player straight up and tells their client about it. The flag that makes the server send the new motion has
-	 * had two names, so it is found by reflection; returns false when it cannot be found.
-	 */
-	private static boolean launch(ServerPlayer player, double upwardSpeed) {
-		if (!motionSyncLookedUp) {
-			motionSyncLookedUp = true;
-
-			for (String name : new String[] {"hurtMarked", "needsSync"}) {
-				try {
-					Field f = Entity.class.getDeclaredField(name);
-
-					if (f.getType() == boolean.class) {
-						f.setAccessible(true);
-						motionSyncField = f;
-						break;
-					}
-				} catch (NoSuchFieldException | RuntimeException ignored) {
-					// try the next name
-				}
-			}
-
-			if (motionSyncField == null) {
-				SkyIslands.LOGGER.warn("Sky Islands could not find the entity motion sync flag; wind gusts use real wind charges instead");
-			}
-		}
-
-		if (motionSyncField == null) {
-			return false;
-		}
+	/** Clears the "ignore fall damage from the current impulse" status of a player. Returns true if any of its members was found. */
+	private static boolean clearImpulseFallImmunity(Player player) {
+		boolean found = false;
 
 		try {
-			player.setDeltaMovement(new Vec3(0.0, upwardSpeed, 0.0));
-			motionSyncField.setBoolean(player, true);
-			return true;
-		} catch (ReflectiveOperationException | RuntimeException e) {
-			motionSyncField = null;
-			SkyIslands.LOGGER.warn("Sky Islands could not launch a player directly; wind gusts use real wind charges instead", e);
-			return false;
+			for (Class<?> type = player.getClass(); type != null && type != Object.class; type = type.getSuperclass()) {
+				for (Method m : type.getDeclaredMethods()) {
+					if (m.getParameterCount() == 0 && m.getName().equals("resetCurrentImpulseContext")) {
+						m.setAccessible(true);
+						m.invoke(player);
+						found = true;
+					} else if (m.getParameterCount() == 1 && m.getParameterTypes()[0] == boolean.class && m.getName().equals("setIgnoreFallDamageFromCurrentImpulse")) {
+						m.setAccessible(true);
+						m.invoke(player, false);
+						found = true;
+					}
+				}
+
+				for (Field f : type.getDeclaredFields()) {
+					if (f.getType() == boolean.class && f.getName().equals("ignoreFallDamageFromCurrentImpulse")) {
+						f.setAccessible(true);
+						f.setBoolean(player, false);
+						found = true;
+					}
+				}
+			}
+		} catch (ReflectiveOperationException | RuntimeException ignored) {
+			// reported through the return value
 		}
+
+		return found;
 	}
 
 	// ------------------------------------------------------------------ fang phase
@@ -879,6 +932,7 @@ public final class ArenaBoss {
 		boss.rainLeft = 0;
 		boss.windCooldown = WIND_FIRST_DELAY_TICKS;
 		boss.windWarn = 0;
+		boss.windLaunched.clear();
 		setBowInterval(boss, BOW_INTERVAL_NORMAL);
 
 		if (phase == PHASE_AXE) {
