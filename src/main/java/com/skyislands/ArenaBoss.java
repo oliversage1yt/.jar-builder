@@ -1301,8 +1301,8 @@ public final class ArenaBoss {
 				r.beamOn = true;
 
 				if (level.getBlockState(glass).isAir()) {
-					level.setBlock(glass, Blocks.CYAN_STAINED_GLASS.defaultBlockState(), 3);
-					r.glassPlaced = true;
+					command(level, quietSource(level), String.format(Locale.ROOT, "setblock %d %d %d minecraft:cyan_stained_glass", glass.getX(), glass.getY(), glass.getZ()));
+					r.glassPlaced = !level.getBlockState(glass).isAir();
 				}
 			}
 
@@ -1341,7 +1341,7 @@ public final class ArenaBoss {
 
 		BlockPos glass = r.altar.above(BEAM_GLASS_HEIGHT);
 
-		if (r.glassPlaced && r.level.getBlockState(glass).is(Blocks.CYAN_STAINED_GLASS)) {
+		if (r.glassPlaced && BuiltInRegistries.BLOCK.getKey(r.level.getBlockState(glass).getBlock()).getPath().equals("cyan_stained_glass")) {
 			r.level.setBlock(glass, Blocks.AIR.defaultBlockState(), 3);
 		}
 
