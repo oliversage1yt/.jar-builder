@@ -25,7 +25,7 @@ public final class CommonConfig {
 
 	/** Maximum health of the sky arena boss (a vanilla Illusioner has 32). */
 	public static double arenaBossHealth = 200.0;
-	/** Health the boss regains every 2 seconds once it has gone 10 seconds without taking damage (0 turns it off). */
+	/** Health the boss regains every 2 seconds once it has gone 20 seconds without taking damage (0 turns it off). */
 	public static double arenaBossRegen = 4.0;
 	/** Respawning the boss puts the lower part of the arena (where the boss fights) back as it generated; the upper part keeps player changes. */
 	public static boolean arenaResetOnRespawn = true;

@@ -119,10 +119,11 @@ public final class ArenaBoss {
 	/** Ticks between fang attacks (a vanilla Evoker waits several seconds). */
 	private static final int FANG_COOLDOWN_TICKS = 24;
 	/**
-	 * Farther than this from its target the boss stops casting fangs and throws spears instead. The longest fang line reaches
-	 * 20 blocks (16 fangs, 1.25 blocks apart), so this is where its fangs stop being able to hurt.
+	 * Farther than this from its target the boss stops casting fangs and throws spears instead. The fang line is as long as
+	 * this range (FANG_LINE_COUNT fangs, 1.25 blocks apart), so this is also as far as its fangs can hurt.
 	 */
-	private static final double FANG_RANGE = 22.0;
+	private static final double FANG_RANGE = 10.0;
+	private static final int FANG_LINE_COUNT = 8;
 	/** Fang phase, target out of fang range: a diamond spear every 3 seconds (the first after a short wind-up with the spear raised). */
 	private static final int SPEAR_COOLDOWN_TICKS = 60;
 	private static final int SPEAR_FIRST_DELAY_TICKS = 20;
@@ -133,7 +134,7 @@ public final class ArenaBoss {
 	private static final int SPEAR_MAX_AGE = 100;
 	private static final String SPEAR_TAG = "sky_islands_spear";
 	/** Regeneration: after this long without taking damage the boss heals every REGEN_INTERVAL ticks (amount: config arenaBossRegen). */
-	private static final int REGEN_AFTER_HIT_TICKS = 200;
+	private static final int REGEN_AFTER_HIT_TICKS = 400;
 	private static final int REGEN_INTERVAL_TICKS = 40;
 	/**
 	 * Arrow phase failsafe: after this long without a clear line of sight to its target (unseen adds 1 per tick, seen removes 2,
@@ -765,7 +766,7 @@ public final class ArenaBoss {
 
 	// ------------------------------------------------------------------ regeneration (all phases)
 
-	/** A boss that has not been hurt for 10 seconds heals a few points every 2 seconds, until it is hit again. */
+	/** A boss that has not been hurt for 20 seconds heals a few points every 2 seconds, until it is hit again. */
 	private static void tickRegen(ServerLevel level, Boss boss) {
 		Mob mob = boss.mob;
 		float health = mob.getHealth();
@@ -1547,7 +1548,7 @@ public final class ArenaBoss {
 				fang(level, source, owner, mob.getX() + Math.cos(f) * 2.5, mob.getZ() + Math.sin(f) * 2.5, minY, maxY, 2);
 			}
 		} else {
-			for (int i = 0; i < 16; i++) {
+			for (int i = 0; i < FANG_LINE_COUNT; i++) {
 				double d = 1.25 * (i + 1);
 				fang(level, source, owner, mob.getX() + Math.cos(angle) * d, mob.getZ() + Math.sin(angle) * d, minY, maxY, 3 + i);
 			}
