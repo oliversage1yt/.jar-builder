@@ -83,11 +83,11 @@ public final class ArenaBoss {
 	/** Axe phase: damage of one swing (a diamond axe), ticks between swings, reach (squared) and run speed. */
 	private static final float AXE_DAMAGE = 9.0F;
 	private static final int AXE_COOLDOWN_TICKS = 20;
-	/** How close (centre to centre, in blocks) the boss must be to land a swing: 1.5 blocks shorter than before (was 2.5). */
-	private static final double AXE_REACH = 1.0;
+	/** How close (centre to centre, in blocks) the boss must be to land a swing: 1.0 blocks shorter than the original 2.5. */
+	private static final double AXE_REACH = 1.5;
 	private static final double AXE_REACH_SQR = AXE_REACH * AXE_REACH;
 	/** Axe phase: after this long without a walkable path to the target (e.g. it pillared up) the boss shoots instead. */
-	private static final int UNREACHABLE_TICKS = 200;
+	private static final int UNREACHABLE_TICKS = 100;
 	/** Minimum ticks the boss keeps the bow before it may go back to the axe. */
 	private static final int SHOOT_MIN_TICKS = 40;
 	/** Bow cooldown of the Illusioner's bow goal: vanilla value, and the faster one used while the target is out of reach. */
@@ -544,6 +544,11 @@ public final class ArenaBoss {
 				} else {
 					boss.bar.removePlayer(player);
 				}
+			}
+
+			// Fire (soul fire in the redesigned arena, lava) never hurts the boss: a permanent, particle-free fire resistance.
+			if (mob.tickCount % 40 == 0) {
+				command(level, quietSource(level), "effect give " + mob.getUUID() + " minecraft:fire_resistance infinite 0 true");
 			}
 
 			int wanted = phaseFor(mob);

@@ -24,6 +24,7 @@ public class SkyIslands implements ModInitializer {
 		ServerChunkEvents.CHUNK_GENERATE.register(GroundFreezer::onGenerate);
 		ServerTickEvents.END_SERVER_TICK.register(GroundFreezer::tick);
 		ArenaBoss.register();
+		GlowingObsidian.register();
 		ServerLifecycleEvents.SERVER_STOPPED.register(server -> {
 			GroundFreezer.clear();
 			ArenaBoss.clear();
