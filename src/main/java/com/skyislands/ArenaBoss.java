@@ -7,6 +7,7 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Iterator;
+import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
@@ -14,7 +15,9 @@ import java.util.UUID;
 
 import net.fabricmc.fabric.api.entity.event.v1.ServerLivingEntityEvents;
 import net.fabricmc.fabric.api.event.lifecycle.v1.ServerEntityEvents;
+import net.fabricmc.fabric.api.event.lifecycle.v1.ServerLifecycleEvents;
 import net.fabricmc.fabric.api.event.lifecycle.v1.ServerTickEvents;
+import net.fabricmc.fabric.api.event.player.UseBlockCallback;
 
 import net.minecraft.commands.CommandSourceStack;
 import net.minecraft.core.BlockPos;
@@ -29,6 +32,7 @@ import net.minecraft.sounds.SoundEvents;
 import net.minecraft.sounds.SoundSource;
 import net.minecraft.world.Difficulty;
 import net.minecraft.world.InteractionHand;
+import net.minecraft.world.InteractionResult;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.entity.item.ItemEntity;
@@ -37,6 +41,7 @@ import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.entity.ai.attributes.Attributes;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.Items;
+import net.minecraft.world.level.Level;
 import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.chunk.LevelChunk;
@@ -87,7 +92,16 @@ public final class ArenaBoss {
 	private static final double AXE_REACH = 1.5;
 	private static final double AXE_REACH_SQR = AXE_REACH * AXE_REACH;
 	/** Axe phase: after this long without a walkable path to the target (e.g. it pillared up) the boss shoots instead. */
-	private static final int UNREACHABLE_TICKS = 100;
+	private static final int UNREACHABLE_TICKS = 40;
+	/** How often (ticks) reachability is sampled. An unreachable sample adds this many ticks to the timer, a reachable one removes twice as many. */
+	private static final int REACH_SAMPLE_TICKS = 4;
+	/** A target this much higher than the boss (blocks) that is also this close (squared, horizontally) cannot be hit with the axe. */
+	private static final double UNREACHABLE_HEIGHT = 2.0;
+	private static final double UNREACHABLE_NEAR_SQR = 9.0;
+	/** The boss keeps (or re-takes) its last player target while it is within this distance, even when it loses sight of it. */
+	private static final double FOCUS_RANGE = 40.0;
+	/** Unreachable-target bow: the arrow is released after this many ticks of drawing instead of 20 (1.5x faster). */
+	private static final int FAST_DRAW_TICKS = 13;
 	/** Minimum ticks the boss keeps the bow before it may go back to the axe. */
 	private static final int SHOOT_MIN_TICKS = 40;
 	/** Bow cooldown of the Illusioner's bow goal: vanilla value, and the faster one used while the target is out of reach. */
@@ -139,7 +153,8 @@ public final class ArenaBoss {
 		boolean shooting;
 		int shootTicks;
 		int unreachableTicks;
-		boolean targetReachable = true;
+		/** The last player the boss was fighting; re-targeted when the AI drops it (e.g. a pillar blocks line of sight). */
+		LivingEntity focus;
 
 		Boss(Mob mob, ServerBossEvent bar, BlockPos home) {
 			this.mob = mob;
@@ -151,6 +166,7 @@ public final class ArenaBoss {
 	private static final Map<ServerLevel, Set<Long>> SCANNED = new HashMap<>();
 	private static final Map<ServerLevel, Set<BlockPos>> MARKERS = new HashMap<>();
 	private static final Map<UUID, Boss> BOSSES = new HashMap<>();
+	private static final List<Ritual> RITUALS = new ArrayList<>();
 
 	/** Set only while the summon command runs: the arena position the new Illusioner belongs to. */
 	private static BlockPos pendingHome;
@@ -167,6 +183,8 @@ public final class ArenaBoss {
 
 	public static void register() {
 		ServerTickEvents.END_SERVER_TICK.register(ArenaBoss::tick);
+		UseBlockCallback.EVENT.register(ArenaBoss::onUseBlock);
+		ServerLifecycleEvents.SERVER_STOPPING.register(server -> finishRituals());
 
 		ServerEntityEvents.ENTITY_LOAD.register((entity, level) -> {
 			if (!(entity instanceof Mob mob)) {
@@ -209,6 +227,7 @@ public final class ArenaBoss {
 		}
 
 		BOSSES.clear();
+		RITUALS.clear();
 	}
 
 	// ------------------------------------------------------------------ ticking
@@ -230,6 +249,8 @@ public final class ArenaBoss {
 				SkyIslands.LOGGER.error("Sky Islands arena boss spawning failed and was disabled for this session", t);
 			}
 		}
+
+		tickRituals();
 
 		if (!bossesFailed) {
 			try {
@@ -551,6 +572,8 @@ public final class ArenaBoss {
 				command(level, quietSource(level), "effect give " + mob.getUUID() + " minecraft:fire_resistance infinite 0 true");
 			}
 
+			keepFocus(level, boss);
+
 			int wanted = phaseFor(mob);
 
 			if (wanted != boss.phase) {
@@ -631,7 +654,6 @@ public final class ArenaBoss {
 
 		boss.shooting = false;
 		boss.unreachableTicks = 0;
-		boss.targetReachable = true;
 		setBowInterval(boss, BOW_INTERVAL_NORMAL);
 
 		if (phase == PHASE_AXE) {
@@ -700,10 +722,11 @@ public final class ArenaBoss {
 	}
 
 	/**
-	 * Whether the boss can walk to the target. Done by reflection (PathNavigation.createPath / Path.canReach) so a
-	 * signature change cannot break the build; when the check is impossible the target counts as reachable.
+	 * Asks the pathfinder whether the boss can walk to the target (PathNavigation.createPath / Path.canReach, by reflection
+	 * so a signature change cannot break the build). Null means "cannot tell": no path came back (the pathfinder refuses
+	 * to path while the mob is in the air) or the check is not possible.
 	 */
-	private static boolean isReachable(Mob mob, LivingEntity target) {
+	private static Boolean pathReaches(Mob mob, LivingEntity target) {
 		try {
 			Object navigation = mob.getNavigation();
 
@@ -711,21 +734,88 @@ public final class ArenaBoss {
 				Class<?>[] types = m.getParameterTypes();
 
 				if (m.getName().equals("createPath") && types.length == 2 && types[0].isAssignableFrom(target.getClass()) && types[1] == int.class) {
-					Object path = m.invoke(navigation, target, 0);
+					Object path = m.invoke(navigation, target, 1);
 
 					if (path == null) {
-						return false;
+						return null;
 					}
 
 					Method canReach = findMethod(path.getClass(), "canReach", 0);
-					return canReach == null || (Boolean) canReach.invoke(path);
+					return canReach == null ? null : (Boolean) canReach.invoke(path);
 				}
 			}
 		} catch (ReflectiveOperationException | RuntimeException ignored) {
 			// fall through
 		}
 
-		return true;
+		return null;
+	}
+
+	/**
+	 * One reachability sample: 1 = the boss can get to the target, 0 = it cannot, -1 = unknown (change nothing).
+	 * Standing right next to something the boss cannot climb counts as unreachable whatever the pathfinder says,
+	 * because the axe cannot hit that high.
+	 */
+	private static int sampleReach(Mob mob, LivingEntity target) {
+		double dx = target.getX() - mob.getX();
+		double dz = target.getZ() - mob.getZ();
+		boolean tooHigh = target.getY() - mob.getY() >= UNREACHABLE_HEIGHT;
+
+		if (tooHigh && dx * dx + dz * dz <= UNREACHABLE_NEAR_SQR) {
+			return 0;
+		}
+
+		Boolean path = pathReaches(mob, target);
+
+		if (path == null) {
+			return tooHigh ? 0 : -1;
+		}
+
+		return path ? 1 : 0;
+	}
+
+	/**
+	 * The AI drops its target after a few seconds without line of sight, and a pillar between the two does exactly that.
+	 * Without this the "target cannot be reached" timer kept restarting. The boss keeps fighting the last player it had.
+	 */
+	private static void keepFocus(ServerLevel level, Boss boss) {
+		Mob mob = boss.mob;
+		LivingEntity current = mob.getTarget();
+
+		if (current != null && current.isAlive()) {
+			boss.focus = current;
+			return;
+		}
+
+		LivingEntity focus = boss.focus;
+
+		if (focus == null) {
+			return;
+		}
+
+		boolean valid = focus.isAlive() && !focus.isRemoved() && focus.level() == mob.level()
+				&& mob.distanceToSqr(focus) <= FOCUS_RANGE * FOCUS_RANGE
+				&& level.getDifficulty() != Difficulty.PEACEFUL
+				&& !(focus instanceof Player p && (p.isCreative() || p.isSpectator()));
+
+		if (valid) {
+			mob.setTarget(focus);
+		} else {
+			boss.focus = null;
+		}
+	}
+
+	/** Releases the arrow early (reflection: the method lives on the Illusioner class, whose package moved between versions). */
+	private static void shootArrow(Mob mob, LivingEntity target) {
+		try {
+			Method shoot = findMethod(mob.getClass(), "performRangedAttack", 2);
+
+			if (shoot != null) {
+				shoot.invoke(mob, target, 1.0F);
+			}
+		} catch (ReflectiveOperationException | RuntimeException e) {
+			SkyIslands.LOGGER.warn("Sky Islands could not fire the boss's fast arrow", e);
+		}
 	}
 
 	/** Sets the cooldown of the Illusioner's bow goal (reflection, as with the mirror spell). */
@@ -776,17 +866,28 @@ public final class ArenaBoss {
 			return;
 		}
 
-		if (mob.tickCount % 10 == 0) {
-			boss.targetReachable = isReachable(mob, target);
+		if (mob.tickCount % REACH_SAMPLE_TICKS == 0) {
+			int sample = sampleReach(mob, target);
+
+			if (sample == 0) {
+				boss.unreachableTicks = Math.min(UNREACHABLE_TICKS, boss.unreachableTicks + REACH_SAMPLE_TICKS);
+			} else if (sample == 1) {
+				boss.unreachableTicks = Math.max(0, boss.unreachableTicks - REACH_SAMPLE_TICKS * 2);
+			}
 		}
 
 		if (boss.shooting) {
-			// The bow goal does the shooting. Back to the axe once the target can be reached again.
+			// The bow goal does the aiming and strafing; here the arrow is let go early so it fires 1.5x faster.
 			boss.shootTicks++;
 
-			if (boss.targetReachable && boss.shootTicks >= SHOOT_MIN_TICKS) {
+			if (mob.isUsingItem() && mob.getTicksUsingItem() >= FAST_DRAW_TICKS && mob.hasLineOfSight(target)) {
+				mob.stopUsingItem();
+				shootArrow(mob, target);
+			}
+
+			// Back to the axe once the target has been reachable for a while.
+			if (boss.unreachableTicks <= 0 && boss.shootTicks >= SHOOT_MIN_TICKS) {
 				boss.shooting = false;
-				boss.unreachableTicks = 0;
 				boss.axeCooldown = AXE_COOLDOWN_TICKS;
 				setBowInterval(boss, BOW_INTERVAL_NORMAL);
 				setMainHand(level, mob, "minecraft:diamond_axe");
@@ -795,15 +896,14 @@ public final class ArenaBoss {
 			return;
 		}
 
-		if (boss.targetReachable) {
-			boss.unreachableTicks = 0;
-		} else if (++boss.unreachableTicks >= UNREACHABLE_TICKS) {
+		if (boss.unreachableTicks >= UNREACHABLE_TICKS) {
 			boss.shooting = true;
 			boss.shootTicks = 0;
 			mob.getNavigation().stop();
 			setMainHand(level, mob, "minecraft:bow");
 			setBowInterval(boss, BOW_INTERVAL_FAST);
 			level.playSound(null, mob.blockPosition(), SoundEvents.EVOKER_PREPARE_ATTACK, SoundSource.HOSTILE, 1.5F, 1.2F);
+			SkyIslands.LOGGER.info("Arena boss switched to its bow: target unreachable (height gap {} blocks)", String.format(Locale.ROOT, "%.1f", target.getY() - mob.getY()));
 			return;
 		}
 
@@ -944,6 +1044,328 @@ public final class ArenaBoss {
 				return;
 			}
 		}
+	}
+
+	// ------------------------------------------------------------------ respawn ritual
+
+	/** Book rises slowly and spins (ticks), then shoots up (ticks), then the beam shines while the boss stands in it (ticks). */
+	private static final int RITUAL_RISE_TICKS = 70;
+	private static final int RITUAL_ZOOM_TICKS = 12;
+	private static final int RITUAL_BEAM_TICKS = 30;
+	/** Interpolation steps of the book's animation (the client smooths each step). */
+	private static final int RISE_STEP_TICKS = 5;
+	private static final int ZOOM_STEP_TICKS = 3;
+	/** The book floats this far above the glowing obsidian, rises this much more while it spins, then zooms up by the sum of these. */
+	private static final double BOOK_START_HEIGHT = 1.6;
+	private static final double BOOK_RISE_BLOCKS = 1.6;
+	private static final double[] ZOOM_STEP_BLOCKS = {3.0, 7.0, 14.0, 24.0};
+	/** Spin: 90 degrees per interpolation step, so the client always turns the same way. */
+	private static final double SPIN_DEGREES_RISE = 18.0;
+	private static final double SPIN_DEGREES_ZOOM = 30.0;
+	/** The cyan glass that tints the beam sits this high above the glowing obsidian (above the boss's head). */
+	private static final int BEAM_GLASS_HEIGHT = 3;
+
+	private static final class Ritual {
+		final ServerLevel level;
+		final BlockPos altar;
+		final UUID display = UUID.randomUUID();
+		final String itemId;
+		int age;
+		boolean displayGone;
+		boolean beamOn;
+		boolean glassPlaced;
+		boolean bossSpawned;
+
+		Ritual(ServerLevel level, BlockPos altar, String itemId) {
+			this.level = level;
+			this.altar = altar;
+			this.itemId = itemId;
+		}
+	}
+
+	private static boolean isRespawnItem(ItemStack stack) {
+		String id = BuiltInRegistries.ITEM.getKey(stack.getItem()).toString();
+
+		for (String allowed : CommonConfig.arenaRespawnItems.split(",")) {
+			if (allowed.trim().equals(id)) {
+				return true;
+			}
+		}
+
+		return false;
+	}
+
+	/** Right click on the glowing obsidian with a book: starts the ritual (unless the boss is already around). */
+	private static InteractionResult onUseBlock(Player player, Level world, InteractionHand hand, net.minecraft.world.phys.BlockHitResult hit) {
+		if (!(world instanceof ServerLevel level) || player.isSpectator() || GlowingObsidian.BLOCK == null) {
+			return InteractionResult.PASS;
+		}
+
+		BlockPos altar = hit.getBlockPos();
+
+		if (!level.getBlockState(altar).is(GlowingObsidian.BLOCK)) {
+			return InteractionResult.PASS;
+		}
+
+		ItemStack stack = player.getItemInHand(hand);
+
+		if (stack.isEmpty() || !isRespawnItem(stack)) {
+			return InteractionResult.PASS;
+		}
+
+		String blocked = ritualBlocker(level, altar);
+
+		if (blocked != null) {
+			command(level, quietSource(level), "title " + player.getUUID() + " actionbar {\"text\":\"" + blocked + "\"}");
+			return InteractionResult.SUCCESS;
+		}
+
+		String itemId = BuiltInRegistries.ITEM.getKey(stack.getItem()).toString();
+
+		if (!player.isCreative()) {
+			stack.shrink(1);
+		}
+
+		Ritual ritual = new Ritual(level, altar.immutable(), itemId);
+		RITUALS.add(ritual);
+		summonBook(ritual);
+		return InteractionResult.SUCCESS;
+	}
+
+	/** Why the ritual cannot start right now, or null when it can. */
+	private static String ritualBlocker(ServerLevel level, BlockPos altar) {
+		BlockPos above = altar.above();
+
+		if (level.getDifficulty() == Difficulty.PEACEFUL) {
+			return "The altar stays silent on Peaceful.";
+		}
+
+		for (Ritual r : RITUALS) {
+			if (r.level == level && r.altar.equals(altar)) {
+				return "The altar is already awake.";
+			}
+		}
+
+		if (isMarker(level.getBlockState(above))) {
+			return "Something is already waiting here.";
+		}
+
+		for (Boss boss : BOSSES.values()) {
+			if (boss.mob.isAlive() && boss.mob.level() == level
+					&& Math.abs(boss.home.getX() - above.getX()) <= 3 && Math.abs(boss.home.getZ() - above.getZ()) <= 3 && Math.abs(boss.home.getY() - above.getY()) <= 3) {
+				return "The Sky Illusioner is still here.";
+			}
+		}
+
+		if (!level.getBlockState(above).isAir()) {
+			return "Something blocks the altar.";
+		}
+
+		return null;
+	}
+
+	private static String uuidNbt(UUID id) {
+		return String.format(Locale.ROOT, "[I;%d,%d,%d,%d]",
+				(int) (id.getMostSignificantBits() >>> 32), (int) id.getMostSignificantBits(),
+				(int) (id.getLeastSignificantBits() >>> 32), (int) id.getLeastSignificantBits());
+	}
+
+	/** The book's rise above its start height at tick t (a straight line while it rises, then the zoom steps). */
+	private static double bookRise(double t) {
+		if (t <= RITUAL_RISE_TICKS) {
+			return BOOK_RISE_BLOCKS * t / RITUAL_RISE_TICKS;
+		}
+
+		double y = BOOK_RISE_BLOCKS;
+		double left = t - RITUAL_RISE_TICKS;
+
+		for (double step : ZOOM_STEP_BLOCKS) {
+			if (left >= ZOOM_STEP_TICKS) {
+				y += step;
+				left -= ZOOM_STEP_TICKS;
+			} else {
+				return y + step * left / ZOOM_STEP_TICKS;
+			}
+		}
+
+		return y;
+	}
+
+	private static double bookSpin(int t) {
+		return Math.toRadians(SPIN_DEGREES_RISE * Math.min(t, RITUAL_RISE_TICKS) + SPIN_DEGREES_ZOOM * Math.max(0, t - RITUAL_RISE_TICKS));
+	}
+
+	private static String transformation(double rise, double spin) {
+		return String.format(Locale.ROOT,
+				"{left_rotation:[0f,%.5ff,0f,%.5ff],right_rotation:[0f,0f,0f,1f],scale:[1.5f,1.5f,1.5f],translation:[0f,%.4ff,0f]}",
+				Math.sin(spin / 2.0), Math.cos(spin / 2.0), rise);
+	}
+
+	/** The floating book: an item display, so the client does the smooth movement and spinning. */
+	private static void summonBook(Ritual r) {
+		double x = r.altar.getX() + 0.5;
+		double y = r.altar.getY() + BOOK_START_HEIGHT;
+		double z = r.altar.getZ() + 0.5;
+
+		command(r.level, quietSource(r.level), String.format(Locale.ROOT,
+				"summon minecraft:item_display %.2f %.2f %.2f {UUID:%s,item:{id:\"%s\",count:1,components:{\"minecraft:enchantment_glint_override\":true}},item_display:\"ground\",brightness:{sky:15,block:15},transformation:%s}",
+				x, y, z, uuidNbt(r.display), r.itemId, transformation(0.0, 0.0)));
+		r.level.playSound(null, r.altar, SoundEvents.EVOKER_CAST_SPELL, SoundSource.BLOCKS, 1.0F, 1.4F);
+	}
+
+	/** Tells the book where to be in {@code steps} ticks. */
+	private static void moveBook(Ritual r, int targetTick, int steps) {
+		command(r.level, quietSource(r.level), String.format(Locale.ROOT,
+				"data merge entity %s {start_interpolation:0,interpolation_duration:%d,transformation:%s}",
+				r.display, steps, transformation(bookRise(targetTick), bookSpin(targetTick))));
+	}
+
+	private static void tickRituals() {
+		Iterator<Ritual> it = RITUALS.iterator();
+
+		while (it.hasNext()) {
+			Ritual r = it.next();
+
+			try {
+				if (!r.level.hasChunkAt(r.altar)) {
+					continue; // paused until the arena is loaded again, so the blocks can be put back
+				}
+
+				if (tickRitual(r)) {
+					it.remove();
+				}
+			} catch (Throwable t) {
+				SkyIslands.LOGGER.error("Sky Islands boss ritual failed; cleaning it up", t);
+				it.remove();
+				finishRitual(r);
+			}
+		}
+	}
+
+	/** Returns true when the ritual is over. */
+	private static boolean tickRitual(Ritual r) {
+		ServerLevel level = r.level;
+		int t = r.age++;
+		double cx = r.altar.getX() + 0.5;
+		double cz = r.altar.getZ() + 0.5;
+		double baseY = r.altar.getY() + BOOK_START_HEIGHT;
+		int zoomEnd = RITUAL_RISE_TICKS + RITUAL_ZOOM_TICKS;
+
+		// ---- animation steps
+		if (t < RITUAL_RISE_TICKS && t % RISE_STEP_TICKS == 0) {
+			moveBook(r, t + RISE_STEP_TICKS, RISE_STEP_TICKS);
+		} else if (t >= RITUAL_RISE_TICKS && t < zoomEnd && (t - RITUAL_RISE_TICKS) % ZOOM_STEP_TICKS == 0) {
+			moveBook(r, t + ZOOM_STEP_TICKS, ZOOM_STEP_TICKS);
+		}
+
+		if (t == RITUAL_RISE_TICKS) {
+			level.playSound(null, r.altar, SoundEvents.EVOKER_PREPARE_ATTACK, SoundSource.BLOCKS, 1.6F, 1.5F);
+		}
+
+		// ---- particles
+		if (t < RITUAL_RISE_TICKS) {
+			// Enchanting-table glyphs appear all over the arena and stream into the book.
+			double by = baseY + bookRise(t);
+
+			if (t % 2 == 0) {
+				for (int i = 0; i < 6; i++) {
+					double angle = level.getRandom().nextDouble() * Math.PI * 2.0;
+					double radius = 2.5 + level.getRandom().nextDouble() * 8.0;
+					double px = cx + Math.cos(angle) * radius;
+					double pz = cz + Math.sin(angle) * radius;
+					double py = r.altar.getY() + 0.8 + level.getRandom().nextDouble() * 4.0;
+					level.sendParticles(ParticleTypes.ENCHANT, cx, by, cz, 0, px - cx, py - by, pz - cz, 1.0);
+				}
+			}
+		} else if (t < zoomEnd) {
+			// A trail behind the fast-moving book.
+			double from = bookRise(t);
+			double to = bookRise(t + 1);
+
+			for (int i = 0; i < 3; i++) {
+				double y = baseY + from + (to - from) * i / 3.0;
+				level.sendParticles(ParticleTypes.END_ROD, cx, y, cz, 2, 0.12, 0.12, 0.12, 0.01);
+				level.sendParticles(ParticleTypes.ENCHANT, cx, y, cz, 4, 0.3, 0.3, 0.3, 0.0);
+			}
+		}
+
+		// ---- the book is gone, the beam shines and the boss is back
+		if (t == zoomEnd) {
+			killBook(r);
+			BlockPos above = r.altar.above();
+			BlockPos glass = r.altar.above(BEAM_GLASS_HEIGHT);
+
+			if (level.getBlockState(r.altar).is(GlowingObsidian.BLOCK)) {
+				// A lone beacon still shines a beam; cyan glass above the boss's head tints it.
+				level.setBlock(r.altar, Blocks.BEACON.defaultBlockState(), 3);
+				r.beamOn = true;
+
+				if (level.getBlockState(glass).isAir()) {
+					level.setBlock(glass, Blocks.CYAN_STAINED_GLASS.defaultBlockState(), 3);
+					r.glassPlaced = true;
+				}
+			}
+
+			level.playSound(null, r.altar, SoundEvents.EVOKER_CAST_SPELL, SoundSource.BLOCKS, 2.0F, 0.8F);
+			level.sendParticles(ParticleTypes.END_ROD, cx, above.getY() + 1.0, cz, 60, 0.5, 1.0, 0.5, 0.15);
+			spawnBoss(level, above);
+			r.bossSpawned = true;
+		}
+
+		if (t > zoomEnd && t % 3 == 0) {
+			level.sendParticles(ParticleTypes.ENCHANT, cx, r.altar.getY() + 2.0, cz, 6, 0.6, 1.2, 0.6, 0.0);
+		}
+
+		if (t >= zoomEnd + RITUAL_BEAM_TICKS) {
+			finishRitual(r);
+			return true;
+		}
+
+		return false;
+	}
+
+	private static void killBook(Ritual r) {
+		if (!r.displayGone) {
+			r.displayGone = true;
+			command(r.level, quietSource(r.level), "kill " + r.display);
+		}
+	}
+
+	/** Cleans up a ritual (also used when the world is closing mid-ritual): book gone, blocks restored, boss present. */
+	private static void finishRitual(Ritual r) {
+		killBook(r);
+
+		if (r.beamOn && r.level.getBlockState(r.altar).is(Blocks.BEACON)) {
+			r.level.setBlock(r.altar, GlowingObsidian.BLOCK.defaultBlockState(), 3);
+		}
+
+		BlockPos glass = r.altar.above(BEAM_GLASS_HEIGHT);
+
+		if (r.glassPlaced && r.level.getBlockState(glass).is(Blocks.CYAN_STAINED_GLASS)) {
+			r.level.setBlock(glass, Blocks.AIR.defaultBlockState(), 3);
+		}
+
+		r.beamOn = false;
+		r.glassPlaced = false;
+
+		if (!r.bossSpawned) {
+			r.bossSpawned = true;
+			spawnBoss(r.level, r.altar.above());
+		}
+	}
+
+	private static void finishRituals() {
+		for (Ritual r : new ArrayList<>(RITUALS)) {
+			try {
+				if (r.level.hasChunkAt(r.altar)) {
+					finishRitual(r);
+				}
+			} catch (Throwable t) {
+				SkyIslands.LOGGER.warn("Sky Islands could not finish a boss ritual while the world was closing", t);
+			}
+		}
+
+		RITUALS.clear();
 	}
 
 	// ------------------------------------------------------------------ drops

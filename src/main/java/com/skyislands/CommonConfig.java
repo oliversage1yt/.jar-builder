@@ -25,6 +25,8 @@ public final class CommonConfig {
 
 	/** Maximum health of the sky arena boss (a vanilla Illusioner has 32). */
 	public static double arenaBossHealth = 200.0;
+	/** Items (comma separated ids) that re-summon the arena boss when used on the glowing obsidian. */
+	public static String arenaRespawnItems = "minecraft:book,minecraft:enchanted_book";
 
 	public static void load() {
 		Path file = FabricLoader.getInstance().getConfigDir().resolve("sky_islands.properties");
@@ -45,7 +47,10 @@ public final class CommonConfig {
 
 		arenaBossHealth = Math.max(1.0, dbl(p, "arenaBossHealth", arenaBossHealth));
 
+		arenaRespawnItems = str(p, "arenaRespawnItems", arenaRespawnItems);
+
 		p.setProperty("arenaBossHealth", String.valueOf(arenaBossHealth));
+		p.setProperty("arenaRespawnItems", arenaRespawnItems);
 		p.setProperty("lightThroughIslands", String.valueOf(lightThroughIslands));
 		p.setProperty("skyMaps", String.valueOf(skyMaps));
 		p.setProperty("naturalFluidsContained", String.valueOf(naturalFluidsContained));
@@ -73,6 +78,11 @@ public final class CommonConfig {
 		} catch (NumberFormatException e) {
 			return fallback;
 		}
+	}
+
+	private static String str(Properties p, String key, String fallback) {
+		String v = p.getProperty(key);
+		return v == null || v.isBlank() ? fallback : v.trim();
 	}
 
 	private static boolean bool(Properties p, String key, boolean fallback) {
