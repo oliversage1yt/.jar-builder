@@ -25,9 +25,7 @@
                   "location_predicate": {
                     "predicate_type": "minecraft:always_true"
                   },
-                  "output_state": {
-                    "Name": "minecraft:barrier"
-                  },
+                  "output_state": "minecraft:barrier",
                   "block_entity_modifier": {
                     "type": "minecraft:clear"
                   }
