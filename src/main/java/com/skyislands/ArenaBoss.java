@@ -133,6 +133,18 @@ public final class ArenaBoss {
 	private static final double SPEAR_GRAVITY = 0.03;
 	private static final int SPEAR_MAX_AGE = 100;
 	private static final String SPEAR_TAG = "sky_islands_spear";
+	/** Size of the spear model; the item's sprite is half a block long in the "fixed" display. */
+	private static final double SPEAR_MODEL_SCALE = 3.0;
+	/**
+	 * Which way the spear's tip points in the displayed item (after the "fixed" display's half turn): the sprite's tip is at
+	 * its upper right, which the half turn mirrors to upper left. If the spear ever flies sideways or backwards, this is the
+	 * vector to change.
+	 */
+	private static final double SPEAR_TIP_X = -1.0;
+	private static final double SPEAR_TIP_Y = 1.0;
+	/** After a gust, the boss throws a spear at each launched player once they are near the top of their flight (but not before this many ticks, and no later than the maximum). */
+	private static final int GUST_SPEAR_MIN_TICKS = 6;
+	private static final int GUST_SPEAR_MAX_TICKS = 16;
 	/** Regeneration: after this long without taking damage the boss heals every REGEN_INTERVAL ticks (amount: config arenaBossRegen). */
 	private static final int REGEN_AFTER_HIT_TICKS = 400;
 	private static final int REGEN_INTERVAL_TICKS = 40;
@@ -179,6 +191,15 @@ public final class ArenaBoss {
 		5, 3, 1, 1, 4, 3, 1
 	};
 
+	/** A launched player waiting for the spear aimed at them: how long they have been in the air and where they were a tick ago. */
+	private static final class GustSpear {
+		int ticks;
+		double lastX;
+		double lastY;
+		double lastZ;
+		boolean seen;
+	}
+
 	private static final class Boss {
 		final Mob mob;
 		final ServerBossEvent bar;
@@ -208,6 +229,8 @@ public final class ArenaBoss {
 		/** Fang phase, target out of fang range: holding a spear raised, and ticks until the next throw. */
 		boolean holdingSpear;
 		int spearCooldown;
+		/** Players just launched by a gust, each about to get a spear thrown at them while they are in the air. */
+		final Map<UUID, GustSpear> gustSpears = new HashMap<>();
 		/** Regeneration: health at the last tick (to notice damage), ticks since the last damage, ticks since the last heal. */
 		float lastHealth = -1.0F;
 		int sinceHitTicks;
@@ -797,6 +820,7 @@ public final class ArenaBoss {
 	private static final class Spear {
 		final ServerLevel level;
 		final UUID id;
+		final UUID id2;
 		final UUID owner;
 		double x;
 		double y;
@@ -806,9 +830,10 @@ public final class ArenaBoss {
 		final double vz;
 		int age;
 
-		Spear(ServerLevel level, UUID id, UUID owner, double x, double y, double z, double vx, double vy, double vz) {
+		Spear(ServerLevel level, UUID id, UUID id2, UUID owner, double x, double y, double z, double vx, double vy, double vz) {
 			this.level = level;
 			this.id = id;
+			this.id2 = id2;
 			this.owner = owner;
 			this.x = x;
 			this.y = y;
@@ -832,7 +857,7 @@ public final class ArenaBoss {
 		boolean far = target != null && target.isAlive() && mob.distanceToSqr(target) > FANG_RANGE * FANG_RANGE;
 
 		if (!far) {
-			if (boss.holdingSpear) {
+			if (boss.holdingSpear && boss.gustSpears.isEmpty()) {
 				boss.holdingSpear = false;
 				setMainHand(level, mob, "minecraft:air");
 				mob.setAggressive(false);
@@ -860,14 +885,15 @@ public final class ArenaBoss {
 	}
 
 	private static void throwSpear(ServerLevel level, Mob mob, LivingEntity target) {
+		launchSpear(level, mob, target.getX(), target.getY() + target.getBbHeight() * 0.6, target.getZ());
+	}
+
+	/** Throws a spear from the boss's hand at a point: aimed a little high to make up for the drop on the way. */
+	private static void launchSpear(ServerLevel level, Mob mob, double toX, double toY, double toZ) {
 		double fromX = mob.getX();
 		double fromY = mob.getEyeY() - 0.1;
 		double fromZ = mob.getZ();
-		double toX = target.getX();
-		double toY = target.getY() + target.getBbHeight() * 0.6;
-		double toZ = target.getZ();
 
-		// Aim a little high to make up for the drop on the way.
 		double flight = Math.sqrt((toX - fromX) * (toX - fromX) + (toY - fromY) * (toY - fromY) + (toZ - fromZ) * (toZ - fromZ)) / SPEAR_SPEED;
 		toY += SPEAR_GRAVITY * flight * (flight + 1.0) / 2.0;
 
@@ -888,16 +914,78 @@ public final class ArenaBoss {
 		double y = fromY + dy;
 		double z = fromZ + dz;
 		UUID id = UUID.randomUUID();
+		UUID id2 = UUID.randomUUID();
 		SPEAR_IDS.add(id);
+		SPEAR_IDS.add(id2);
 
-		command(level, quietSource(level), String.format(Locale.ROOT,
-				"summon minecraft:item_display %.2f %.2f %.2f {UUID:%s,Tags:[\"%s\"],item:{id:\"minecraft:diamond_spear\",count:1},item_display:\"fixed\",billboard:\"center\",teleport_duration:1,"
-						+ "transformation:{translation:[0f,0f,0f],left_rotation:[0f,0f,0f,1f],scale:[1.6f,1.6f,1.6f],right_rotation:[0f,0f,0f,1f]}}",
-				x, y, z, uuidNbt(id), SPEAR_TAG));
+		// Two copies of the flat item crossed at right angles, so the spear looks solid from every side.
+		for (int i = 0; i < 2; i++) {
+			command(level, quietSource(level), String.format(Locale.ROOT,
+					"summon minecraft:item_display %.2f %.2f %.2f {UUID:%s,Tags:[\"%s\"],item:{id:\"minecraft:diamond_spear\",count:1},item_display:\"fixed\",teleport_duration:1,"
+							+ "start_interpolation:0,interpolation_duration:1,"
+							+ "transformation:{translation:[0f,0f,0f],left_rotation:%s,scale:[%.2ff,%.2ff,%.2ff],right_rotation:[0f,0f,0f,1f]}}",
+					x, y, z, uuidNbt(i == 0 ? id : id2), SPEAR_TAG, spearRotation(dx, dy, dz, i == 1), SPEAR_MODEL_SCALE, SPEAR_MODEL_SCALE, SPEAR_MODEL_SCALE));
+		}
+
 		command(level, quietSource(level), String.format(Locale.ROOT, "playsound minecraft:item.trident.throw hostile @a %.1f %.1f %.1f 3.0 0.8", fromX, fromY, fromZ));
 		swingArm(mob);
 
-		SPEARS.add(new Spear(level, id, mob.getUUID(), x, y, z, dx * SPEAR_SPEED, dy * SPEAR_SPEED, dz * SPEAR_SPEED));
+		SPEARS.add(new Spear(level, id, id2, mob.getUUID(), x, y, z, dx * SPEAR_SPEED, dy * SPEAR_SPEED, dz * SPEAR_SPEED));
+	}
+
+	/**
+	 * The rotation (as an NBT quaternion list [x, y, z, w]) that turns the spear's tip, which points along (SPEAR_TIP_X,
+	 * SPEAR_TIP_Y, 0) in the displayed item, to the direction of flight (a unit vector). The second copy is turned a further
+	 * quarter turn about the flight direction.
+	 */
+	private static String spearRotation(double dx, double dy, double dz, boolean crossed) {
+		double tipLength = Math.sqrt(SPEAR_TIP_X * SPEAR_TIP_X + SPEAR_TIP_Y * SPEAR_TIP_Y);
+		double ux = SPEAR_TIP_X / tipLength;
+		double uy = SPEAR_TIP_Y / tipLength;
+		double uz = 0.0;
+
+		// Shortest turn from the tip direction u to the flight direction d: axis u x d, angle between them.
+		double dot = ux * dx + uy * dy + uz * dz;
+		double qx;
+		double qy;
+		double qz;
+		double qw;
+
+		if (dot < -0.999999) {
+			qx = 0.0;
+			qy = 0.0;
+			qz = 1.0;
+			qw = 0.0;
+		} else {
+			qx = uy * dz - uz * dy;
+			qy = uz * dx - ux * dz;
+			qz = ux * dy - uy * dx;
+			qw = 1.0 + dot;
+			double norm = Math.sqrt(qx * qx + qy * qy + qz * qz + qw * qw);
+			qx /= norm;
+			qy /= norm;
+			qz /= norm;
+			qw /= norm;
+		}
+
+		if (crossed) {
+			double half = Math.sqrt(0.5);
+			double ax = dx * half;
+			double ay = dy * half;
+			double az = dz * half;
+			double aw = half;
+			// (a quarter turn about d) applied after (q)
+			double rw = aw * qw - (ax * qx + ay * qy + az * qz);
+			double rx = aw * qx + qw * ax + (ay * qz - az * qy);
+			double ry = aw * qy + qw * ay + (az * qx - ax * qz);
+			double rz = aw * qz + qw * az + (ax * qy - ay * qx);
+			qx = rx;
+			qy = ry;
+			qz = rz;
+			qw = rw;
+		}
+
+		return String.format(Locale.ROOT, "[%.5ff,%.5ff,%.5ff,%.5ff]", qx, qy, qz, qw);
 	}
 
 	/** Moves every spear in flight, a short step at a time so nothing is skipped over: hits a player, a block, or falls out of the sky. */
@@ -910,7 +998,9 @@ public final class ArenaBoss {
 			if (!advanceSpear(spear)) {
 				it.remove();
 				SPEAR_IDS.remove(spear.id);
+				SPEAR_IDS.remove(spear.id2);
 				command(spear.level, quietSource(spear.level), "kill " + spear.id);
+				command(spear.level, quietSource(spear.level), "kill " + spear.id2);
 			}
 		}
 	}
@@ -955,7 +1045,16 @@ public final class ArenaBoss {
 		spear.x += spear.vx;
 		spear.y += spear.vy;
 		spear.z += spear.vz;
-		command(level, quietSource(level), String.format(Locale.ROOT, "tp %s %.3f %.3f %.3f", spear.id, spear.x, spear.y, spear.z));
+		// Both pictures follow the spear and turn to point along its path (nose dipping as it falls), like a thrown trident.
+		double speed = Math.sqrt(spear.vx * spear.vx + spear.vy * spear.vy + spear.vz * spear.vz);
+
+		for (int i = 0; i < 2; i++) {
+			UUID picture = i == 0 ? spear.id : spear.id2;
+			command(level, quietSource(level), String.format(Locale.ROOT, "tp %s %.3f %.3f %.3f", picture, spear.x, spear.y, spear.z));
+			command(level, quietSource(level), String.format(Locale.ROOT, "data merge entity %s {start_interpolation:0,interpolation_duration:1,transformation:{left_rotation:%s}}",
+					picture, spearRotation(spear.vx / speed, spear.vy / speed, spear.vz / speed, i == 1)));
+		}
+
 		return true;
 	}
 
@@ -987,6 +1086,7 @@ public final class ArenaBoss {
 		Mob mob = boss.mob;
 
 		keepFallDamage(level, boss);
+		tickGustSpears(level, boss);
 
 		if (boss.windWarn > 0) {
 			boss.windWarn--;
@@ -1060,6 +1160,77 @@ public final class ArenaBoss {
 		}
 
 		boss.windLaunched.put(player.getUUID(), WIND_FALL_WATCH_TICKS);
+
+		// The boss raises a spear: it will throw it at this player once they are high in the air.
+		boss.gustSpears.put(player.getUUID(), new GustSpear());
+
+		if (!boss.holdingSpear) {
+			boss.holdingSpear = true;
+			setMainHand(level, boss.mob, "minecraft:diamond_spear");
+		}
+	}
+
+	/**
+	 * A spear for every launched player, thrown straight at them while they are in the air. It waits until they are near the
+	 * top of their flight (so they are almost still and the aim is true) and leads them by how they are moving, so the only way
+	 * out of it is to change course in the air.
+	 */
+	private static void tickGustSpears(ServerLevel level, Boss boss) {
+		if (boss.gustSpears.isEmpty()) {
+			return;
+		}
+
+		Mob mob = boss.mob;
+		Iterator<Map.Entry<UUID, GustSpear>> it = boss.gustSpears.entrySet().iterator();
+
+		while (it.hasNext()) {
+			Map.Entry<UUID, GustSpear> entry = it.next();
+			Player player = level.getPlayerByUUID(entry.getKey());
+			GustSpear gust = entry.getValue();
+
+			if (player == null || !player.isAlive() || player.isSpectator()) {
+				it.remove();
+				continue;
+			}
+
+			double vx = gust.seen ? player.getX() - gust.lastX : 0.0;
+			double vy = gust.seen ? player.getY() - gust.lastY : 0.0;
+			double vz = gust.seen ? player.getZ() - gust.lastZ : 0.0;
+			gust.lastX = player.getX();
+			gust.lastY = player.getY();
+			gust.lastZ = player.getZ();
+			gust.seen = true;
+			gust.ticks++;
+
+			mob.setAggressive(true);
+			mob.getLookControl().setLookAt(player, 30.0F, 30.0F);
+
+			boolean topOfFlight = gust.ticks >= GUST_SPEAR_MIN_TICKS && vy <= 0.15;
+
+			if (!topOfFlight && gust.ticks < GUST_SPEAR_MAX_TICKS) {
+				continue;
+			}
+
+			// Where they will be when the spear arrives: two passes of "how long does the spear take to get there".
+			double aimY = player.getY() + player.getBbHeight() * 0.6;
+			double flight = 0.0;
+			double toX = player.getX();
+			double toY = aimY;
+			double toZ = player.getZ();
+
+			for (int pass = 0; pass < 2; pass++) {
+				toX = player.getX() + vx * flight;
+				toY = aimY + vy * flight - 0.04 * flight * flight;
+				toZ = player.getZ() + vz * flight;
+				double ddx = toX - mob.getX();
+				double ddy = toY - mob.getEyeY();
+				double ddz = toZ - mob.getZ();
+				flight = Math.sqrt(ddx * ddx + ddy * ddy + ddz * ddz) / SPEAR_SPEED;
+			}
+
+			launchSpear(level, mob, toX, toY, toZ);
+			it.remove();
+		}
 	}
 
 	/**
@@ -1181,6 +1352,7 @@ public final class ArenaBoss {
 		boss.windWarn = 0;
 		boss.windLaunched.clear();
 		boss.holdingSpear = false;
+		boss.gustSpears.clear();
 		boss.spearCooldown = SPEAR_FIRST_DELAY_TICKS;
 		setBowInterval(boss, BOW_INTERVAL_NORMAL);
 
