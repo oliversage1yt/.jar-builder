@@ -1051,7 +1051,7 @@ public final class ArenaBoss {
 	/** Book rises slowly and spins (ticks), then shoots up (ticks), then the beam shines while the boss stands in it (ticks). */
 	private static final int RITUAL_RISE_TICKS = 70;
 	private static final int RITUAL_ZOOM_TICKS = 12;
-	private static final int RITUAL_BEAM_TICKS = 30;
+	private static final int RITUAL_BEAM_TICKS = 50;
 	/** Interpolation steps of the book's animation (the client smooths each step). */
 	private static final int RISE_STEP_TICKS = 5;
 	private static final int ZOOM_STEP_TICKS = 3;
@@ -1062,37 +1062,32 @@ public final class ArenaBoss {
 	/** Spin: 90 degrees per interpolation step, so the client always turns the same way. */
 	private static final double SPIN_DEGREES_RISE = 18.0;
 	private static final double SPIN_DEGREES_ZOOM = 30.0;
-	/** The cyan glass that tints the beam sits this high above the glowing obsidian (above the boss's head). */
-	private static final int BEAM_GLASS_HEIGHT = 3;
+	/**
+	 * The beam is an end gateway's: it is drawn by the block's renderer (no sky or glass needed) for the first 200 ticks of
+	 * the gateway's life, growing and shrinking with a sine curve. Starting its Age here shows the near-full-size middle of
+	 * that curve (peak at tick 100) for the whole beam time.
+	 */
+	private static final int GATEWAY_START_AGE = 75;
 
 	private static final class Ritual {
 		final ServerLevel level;
 		final BlockPos altar;
 		final UUID display = UUID.randomUUID();
-		final String itemId;
 		int age;
 		boolean displayGone;
-		boolean beamOn;
-		boolean glassPlaced;
+		/** The block under the altar that the end gateway temporarily replaces (null while no gateway is there). */
+		BlockState replaced;
 		boolean bossSpawned;
 
-		Ritual(ServerLevel level, BlockPos altar, String itemId) {
+		Ritual(ServerLevel level, BlockPos altar) {
 			this.level = level;
 			this.altar = altar;
-			this.itemId = itemId;
 		}
 	}
 
+	/** Only the plain Book: the boss drops Enchanted Books, which would otherwise let players re-summon it forever. */
 	private static boolean isRespawnItem(ItemStack stack) {
-		String id = BuiltInRegistries.ITEM.getKey(stack.getItem()).toString();
-
-		for (String allowed : CommonConfig.arenaRespawnItems.split(",")) {
-			if (allowed.trim().equals(id)) {
-				return true;
-			}
-		}
-
-		return false;
+		return stack.is(Items.BOOK);
 	}
 
 	/** Right click on the glowing obsidian with a book: starts the ritual (unless the boss is already around). */
@@ -1120,13 +1115,11 @@ public final class ArenaBoss {
 			return InteractionResult.SUCCESS;
 		}
 
-		String itemId = BuiltInRegistries.ITEM.getKey(stack.getItem()).toString();
-
 		if (!player.isCreative()) {
 			stack.shrink(1);
 		}
 
-		Ritual ritual = new Ritual(level, altar.immutable(), itemId);
+		Ritual ritual = new Ritual(level, altar.immutable());
 		RITUALS.add(ritual);
 		summonBook(ritual);
 		return InteractionResult.SUCCESS;
@@ -1208,8 +1201,8 @@ public final class ArenaBoss {
 		double z = r.altar.getZ() + 0.5;
 
 		command(r.level, quietSource(r.level), String.format(Locale.ROOT,
-				"summon minecraft:item_display %.2f %.2f %.2f {UUID:%s,item:{id:\"%s\",count:1,components:{\"minecraft:enchantment_glint_override\":true}},item_display:\"ground\",brightness:{sky:15,block:15},transformation:%s}",
-				x, y, z, uuidNbt(r.display), r.itemId, transformation(0.0, 0.0)));
+				"summon minecraft:item_display %.2f %.2f %.2f {UUID:%s,item:{id:\"minecraft:book\",count:1,components:{\"minecraft:enchantment_glint_override\":true}},item_display:\"ground\",brightness:{sky:15,block:15},transformation:%s}",
+				x, y, z, uuidNbt(r.display), transformation(0.0, 0.0)));
 		r.level.playSound(null, r.altar, SoundEvents.EVOKER_CAST_SPELL, SoundSource.BLOCKS, 1.0F, 1.4F);
 	}
 
@@ -1293,17 +1286,12 @@ public final class ArenaBoss {
 		if (t == zoomEnd) {
 			killBook(r);
 			BlockPos above = r.altar.above();
-			BlockPos glass = r.altar.above(BEAM_GLASS_HEIGHT);
+			BlockPos under = r.altar.below();
 
-			if (level.getBlockState(r.altar).is(GlowingObsidian.BLOCK)) {
-				// A lone beacon still shines a beam; cyan glass above the boss's head tints it.
-				level.setBlock(r.altar, Blocks.BEACON.defaultBlockState(), 3);
-				r.beamOn = true;
-
-				if (level.getBlockState(glass).isAir()) {
-					command(level, quietSource(level), String.format(Locale.ROOT, "setblock %d %d %d minecraft:cyan_stained_glass", glass.getX(), glass.getY(), glass.getZ()));
-					r.glassPlaced = !level.getBlockState(glass).isAir();
-				}
+			// The gateway replaces the plain block under the altar, so it is hidden and the altar stays solid for the boss.
+			if (level.getBlockEntity(under) == null && !level.getBlockState(under).isAir()) {
+				r.replaced = level.getBlockState(under);
+				command(level, quietSource(level), String.format(Locale.ROOT, "setblock %d %d %d minecraft:end_gateway{Age:%dL}", under.getX(), under.getY(), under.getZ(), GATEWAY_START_AGE));
 			}
 
 			level.playSound(null, r.altar, SoundEvents.EVOKER_CAST_SPELL, SoundSource.BLOCKS, 2.0F, 0.8F);
@@ -1335,18 +1323,15 @@ public final class ArenaBoss {
 	private static void finishRitual(Ritual r) {
 		killBook(r);
 
-		if (r.beamOn && r.level.getBlockState(r.altar).is(Blocks.BEACON)) {
-			r.level.setBlock(r.altar, GlowingObsidian.BLOCK.defaultBlockState(), 3);
+		if (r.replaced != null) {
+			BlockPos under = r.altar.below();
+
+			if (BuiltInRegistries.BLOCK.getKey(r.level.getBlockState(under).getBlock()).getPath().equals("end_gateway")) {
+				r.level.setBlock(under, r.replaced, 3);
+			}
+
+			r.replaced = null;
 		}
-
-		BlockPos glass = r.altar.above(BEAM_GLASS_HEIGHT);
-
-		if (r.glassPlaced && BuiltInRegistries.BLOCK.getKey(r.level.getBlockState(glass).getBlock()).getPath().equals("cyan_stained_glass")) {
-			r.level.setBlock(glass, Blocks.AIR.defaultBlockState(), 3);
-		}
-
-		r.beamOn = false;
-		r.glassPlaced = false;
 
 		if (!r.bossSpawned) {
 			r.bossSpawned = true;
