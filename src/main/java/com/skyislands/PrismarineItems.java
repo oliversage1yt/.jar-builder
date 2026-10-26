@@ -34,7 +34,6 @@ import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.entity.ai.attributes.AttributeInstance;
 import net.minecraft.world.entity.ai.attributes.AttributeModifier;
 import net.minecraft.world.entity.ai.attributes.Attributes;
-import net.minecraft.world.item.AxeItem;
 import net.minecraft.world.item.CreativeModeTabs;
 import net.minecraft.world.item.Item;
 import net.minecraft.world.item.ItemStack;
@@ -49,7 +48,7 @@ import net.minecraft.world.item.enchantment.ItemEnchantments;
  *
  * <p><b>Stick</b>: a plain item, crafted from 2 prismarine shards (data/sky_islands/recipe/prismarine_stick.json).
  *
- * <p><b>Axe</b>: a real {@link AxeItem} (so it strips logs and scrapes copper like any axe, and mines and takes
+ * <p><b>Axe</b>: a real axe (built with {@code Item.Properties.axe}) (so it strips logs and scrapes copper like any axe, and mines and takes
  * Efficiency like one), one step above netherite in damage (11 instead of 10) and with a base attack speed of 1.2.
  * Which enchantments it accepts is decided by item tags, in data/minecraft/tags/item/enchantable and
  * data/sky_islands/tags/item/enchantable:
@@ -118,7 +117,7 @@ public final class PrismarineItems {
 		axeProperties.component(DataComponents.ITEM_MODEL, axeId);
 		axeProperties.component(DataComponents.ITEM_NAME, Component.translatable("item.sky_islands.prismarine_axe"));
 		PRISMARINE_AXE = Registry.register(BuiltInRegistries.ITEM, axeId,
-			new PrismarineAxeItem(MATERIAL, AXE_BASE_DAMAGE, AXE_ATTACK_SPEED_MODIFIER, axeProperties));
+			new PrismarineAxeItem(axeProperties.axe(MATERIAL, AXE_BASE_DAMAGE, AXE_ATTACK_SPEED_MODIFIER)));
 
 		// creative tabs: the stick next to the vanilla stick, the axe right after the netherite axe
 		CreativeModeTabEvents.modifyOutputEvent(CreativeModeTabs.INGREDIENTS).register(output -> output.insertAfter(Items.STICK, PRISMARINE_STICK));
@@ -243,7 +242,8 @@ public final class PrismarineItems {
 				}
 
 				if (other.hurtServer(level, level.damageSources().playerAttack(player), sweepDamage)) {
-					other.knockback(0.4F, Mth.sin(yawRadians), -Mth.cos(yawRadians));
+					double push = 0.4 * (1.0 - other.getAttributeValue(Attributes.KNOCKBACK_RESISTANCE));
+					other.push(-Mth.sin(yawRadians) * push, 0.1, Mth.cos(yawRadians) * push);
 				}
 			}
 		} finally {
@@ -261,9 +261,9 @@ public final class PrismarineItems {
 	// ------------------------------------------------------------------ the item
 
 	/** An axe that adds the Density enchantment's falling damage to a hit, the way a mace does. */
-	static final class PrismarineAxeItem extends AxeItem {
-		PrismarineAxeItem(ToolMaterial material, float attackDamage, float attackSpeed, Item.Properties properties) {
-			super(material, attackDamage, attackSpeed, properties);
+	static final class PrismarineAxeItem extends Item {
+		PrismarineAxeItem(Item.Properties properties) {
+			super(properties);
 		}
 
 		/**
@@ -271,7 +271,7 @@ public final class PrismarineItems {
 		 * (Density's damage per fallen block) x (blocks fallen). Without Density it is 0, so a plain axe hit is unchanged:
 		 * the mace's big base smash damage is NOT copied, only what the enchantment adds.
 		 */
-		@Override
+		// no @Override on purpose: if this version no longer has the method, the build still works (and Density then does nothing)
 		public float getAttackDamageBonus(Entity target, float baseDamage, DamageSource damageSource) {
 			if (damageSource.getDirectEntity() instanceof LivingEntity attacker
 				&& attacker.level() instanceof ServerLevel level
