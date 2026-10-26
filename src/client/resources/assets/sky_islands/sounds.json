@@ -54,5 +54,12 @@
         "stream": true
       }
     ]
+  },
+  "recipe_unlock": {
+    "sounds": [
+      {
+        "name": "sky_islands:ui/recipe_unlock"
+      }
+    ]
   }
 }

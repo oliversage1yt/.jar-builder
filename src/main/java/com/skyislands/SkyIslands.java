@@ -25,6 +25,7 @@ public class SkyIslands implements ModInitializer {
 		ServerTickEvents.END_SERVER_TICK.register(GroundFreezer::tick);
 		WindSpears.register();
 		PrismarineItems.register();
+		RecipeUnlocks.register();
 		RainDrowned.register();
 		SpearVisual.register();
 		ArenaBoss.register();

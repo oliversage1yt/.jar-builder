@@ -12,5 +12,6 @@
   },
   "result": {
     "id": "sky_islands:stone_windspear"
-  }
+  },
+  "show_notification": false
 }

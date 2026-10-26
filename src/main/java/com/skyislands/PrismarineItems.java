@@ -39,6 +39,7 @@ import net.minecraft.world.item.Item;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.Items;
 import net.minecraft.world.item.ToolMaterial;
+import net.minecraft.world.item.component.ItemAttributeModifiers;
 import net.minecraft.world.item.enchantment.Enchantment;
 import net.minecraft.world.item.enchantment.EnchantmentHelper;
 import net.minecraft.world.item.enchantment.ItemEnchantments;
@@ -63,7 +64,7 @@ import net.minecraft.world.item.enchantment.ItemEnchantments;
  * <li><b>Sweeping Edge</b>: vanilla allows it on swords only, and only swords sweep. Here an axe with Sweeping Edge
  * sweeps like a sword (see {@link #sweep}).</li>
  * </ul>
- * Efficiency also changes the attack speed (see {@link #updateEfficiencySpeed}).
+ * Efficiency also changes the attack speed (see {@link #updateEfficiency}).
  */
 public final class PrismarineItems {
 	/** Repair material for the axe (an anvil combines it with prismarine shards). */
@@ -81,7 +82,7 @@ public final class PrismarineItems {
 	 * which is what was asked for. Make it +0.1 for an Efficiency that swings faster instead.
 	 */
 	private static final double EFFICIENCY_ATTACK_SPEED_PER_LEVEL = -0.1;
-	private static final Identifier EFFICIENCY_SPEED_ID = SkyIslands.id("prismarine_axe_efficiency");
+	private static final Identifier MINING_CANCEL_ID = SkyIslands.id("prismarine_axe_no_efficiency_mining");
 
 	/** A fall must be longer than this (blocks) for Density to count: same as the mace's smash attack. */
 	private static final float SMASH_FALL_THRESHOLD = 1.5F;
@@ -126,8 +127,10 @@ public final class PrismarineItems {
 
 		// Efficiency changes the attack speed of whoever holds the axe
 		ServerTickEvents.END_SERVER_TICK.register(server -> {
+			boolean whole = server.getTickCount() % 20 == 0;
+
 			for (ServerPlayer player : server.getPlayerList().getPlayers()) {
-				updateEfficiencySpeed(player);
+				updateEfficiency(player, whole);
 			}
 		});
 
@@ -171,35 +174,81 @@ public final class PrismarineItems {
 	// ------------------------------------------------------------------ efficiency
 
 	/**
-	 * While a Prismarine Axe is in the main hand, each level of Efficiency adds {@link #EFFICIENCY_ATTACK_SPEED_PER_LEVEL}
-	 * to the holder's attack speed (1.2 base, so Efficiency I = 1.1, II = 1.0, ...). It is a transient attribute modifier
-	 * (never saved) that is removed the moment the axe leaves the main hand or loses Efficiency. Mining speed is vanilla
-	 * Efficiency, untouched.
+	 * Efficiency on a Prismarine Axe changes how fast it swings, not how fast it mines:
+	 * <ul>
+	 * <li>The axe's own attack speed modifier (on the item, so the tooltip and the cooldown both use it) is rewritten to
+	 * 1.2 + {@link #EFFICIENCY_ATTACK_SPEED_PER_LEVEL} x level: Efficiency I = 1.1, II = 1.0 ... Axes in the main hand and
+	 * off hand are kept up to date every tick, the rest of the inventory once a second.</li>
+	 * <li>Vanilla Efficiency's mining boost (level squared + 1, an attribute on the player) is cancelled with an equal
+	 * negative transient modifier while a Prismarine Axe with Efficiency is in the main hand.</li>
+	 * </ul>
 	 */
-	private static void updateEfficiencySpeed(ServerPlayer player) {
-		AttributeInstance speed = player.getAttribute(Attributes.ATTACK_SPEED);
+	private static void updateEfficiency(ServerPlayer player, boolean wholeInventory) {
+		ItemStack held = player.getMainHandItem();
+		syncAttackSpeed(held);
+		syncAttackSpeed(player.getOffhandItem());
 
-		if (speed == null) {
+		if (wholeInventory) {
+			for (int i = 0; i < player.getInventory().getContainerSize(); i++) {
+				syncAttackSpeed(player.getInventory().getItem(i));
+			}
+		}
+
+		AttributeInstance mining = player.getAttribute(Attributes.MINING_EFFICIENCY);
+
+		if (mining == null) {
 			return;
 		}
 
-		ItemStack held = player.getMainHandItem();
-		int level = isPrismarineAxe(held) ? levelOf(held, "minecraft:efficiency") : 0;
-		AttributeModifier current = speed.getModifier(EFFICIENCY_SPEED_ID);
+		AttributeModifier current = mining.getModifier(MINING_CANCEL_ID);
+		double without = mining.getValue() - (current == null ? 0.0 : current.amount());
 
-		if (level <= 0) {
+		if (!isPrismarineAxe(held) || levelOf(held, "minecraft:efficiency") <= 0 || without <= 0.0) {
 			if (current != null) {
-				speed.removeModifier(EFFICIENCY_SPEED_ID);
+				mining.removeModifier(MINING_CANCEL_ID);
 			}
 
 			return;
 		}
 
-		double amount = EFFICIENCY_ATTACK_SPEED_PER_LEVEL * level;
-
-		if (current == null || current.amount() != amount) {
-			speed.addOrUpdateTransientModifier(new AttributeModifier(EFFICIENCY_SPEED_ID, amount, AttributeModifier.Operation.ADD_VALUE));
+		if (current == null || Math.abs(current.amount() + without) > 1.0E-6) {
+			mining.addOrUpdateTransientModifier(new AttributeModifier(MINING_CANCEL_ID, -without, AttributeModifier.Operation.ADD_VALUE));
 		}
+	}
+
+	/** Makes the axe's attack speed modifier match its Efficiency level (does nothing for other items or when it already matches). */
+	private static void syncAttackSpeed(ItemStack stack) {
+		if (!isPrismarineAxe(stack)) {
+			return;
+		}
+
+		double target = AXE_ATTACK_SPEED_MODIFIER + EFFICIENCY_ATTACK_SPEED_PER_LEVEL * levelOf(stack, "minecraft:efficiency");
+		ItemAttributeModifiers current = stack.getOrDefault(DataComponents.ATTRIBUTE_MODIFIERS, ItemAttributeModifiers.EMPTY);
+		boolean differs = false;
+
+		for (ItemAttributeModifiers.Entry entry : current.modifiers()) {
+			if (entry.attribute().equals(Attributes.ATTACK_SPEED) && Math.abs(entry.modifier().amount() - target) > 1.0E-6) {
+				differs = true;
+			}
+		}
+
+		if (!differs) {
+			return;
+		}
+
+		ItemAttributeModifiers.Builder builder = ItemAttributeModifiers.builder();
+
+		for (ItemAttributeModifiers.Entry entry : current.modifiers()) {
+			AttributeModifier modifier = entry.modifier();
+
+			if (entry.attribute().equals(Attributes.ATTACK_SPEED)) {
+				modifier = new AttributeModifier(modifier.id(), target, modifier.operation());
+			}
+
+			builder.add(entry.attribute(), modifier, entry.slot());
+		}
+
+		stack.set(DataComponents.ATTRIBUTE_MODIFIERS, builder.build());
 	}
 
 	// ------------------------------------------------------------------ sweeping edge

@@ -11,5 +11,6 @@
   "result": {
     "id": "sky_islands:prismarine_stick",
     "count": 4
-  }
+  },
+  "show_notification": false
 }

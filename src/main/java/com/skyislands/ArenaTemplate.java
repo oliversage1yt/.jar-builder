@@ -100,13 +100,13 @@ final class ArenaTemplate {
 				z[i] = (Integer) pos.get(2);
 				st[i] = (Integer) block.get("state");
 
-				if (palette[st[i]].equals("minecraft:crying_obsidian")) {
+				if (palette[st[i]].equals("sky_islands:glowing_obsidian")) {
 					altar = i;
 				}
 			}
 
 			if (altar < 0) {
-				throw new IOException("template has no crying obsidian altar");
+				throw new IOException("template has no glowing obsidian altar");
 			}
 
 			int ax = x[altar];
