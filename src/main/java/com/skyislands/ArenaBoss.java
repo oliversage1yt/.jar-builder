@@ -1884,7 +1884,7 @@ public final class ArenaBoss {
 
 		BlockPos altar = hit.getBlockPos();
 
-		if (!level.getBlockState(altar).is(GlowingObsidian.BLOCK)) {
+		if (!level.getBlockState(altar).is(GlowingObsidian.BLOCK) || !GlowingObsidian.hasPattern(level, altar)) {
 			return InteractionResult.PASS;
 		}
 

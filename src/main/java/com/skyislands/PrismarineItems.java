@@ -78,10 +78,10 @@ public final class PrismarineItems {
 	private static final float AXE_ATTACK_SPEED_MODIFIER = 1.2F - 4.0F;
 
 	/**
-	 * Attack speed added per level of Efficiency while a Prismarine Axe is held. NEGATIVE = slower (1.2 -> 1.1 -> 1.0 ...),
-	 * which is what was asked for. Make it +0.1 for an Efficiency that swings faster instead.
+	 * Attack speed added per level of Efficiency while a Prismarine Axe is held. POSITIVE = faster (1.2 -> 1.3 -> 1.4 ...).
+	 * Make it negative for an Efficiency that swings slower instead.
 	 */
-	private static final double EFFICIENCY_ATTACK_SPEED_PER_LEVEL = -0.1;
+	private static final double EFFICIENCY_ATTACK_SPEED_PER_LEVEL = 0.1;
 	private static final Identifier MINING_CANCEL_ID = SkyIslands.id("prismarine_axe_no_efficiency_mining");
 
 	/** A fall must be longer than this (blocks) for Density to count: same as the mace's smash attack. */
@@ -177,7 +177,7 @@ public final class PrismarineItems {
 	 * Efficiency on a Prismarine Axe changes how fast it swings, not how fast it mines:
 	 * <ul>
 	 * <li>The axe's own attack speed modifier (on the item, so the tooltip and the cooldown both use it) is rewritten to
-	 * 1.2 + {@link #EFFICIENCY_ATTACK_SPEED_PER_LEVEL} x level: Efficiency I = 1.1, II = 1.0 ... Axes in the main hand and
+	 * 1.2 + {@link #EFFICIENCY_ATTACK_SPEED_PER_LEVEL} x level: Efficiency I = 1.3, II = 1.4 ... Axes in the main hand and
 	 * off hand are kept up to date every tick, the rest of the inventory once a second.</li>
 	 * <li>Vanilla Efficiency's mining boost (level squared + 1, an attribute on the player) is cancelled with an equal
 	 * negative transient modifier while a Prismarine Axe with Efficiency is in the main hand.</li>

@@ -2649,7 +2649,7 @@
     },
     "thirdperson_righthand": {
       "rotation": [
-        -55,
+        55,
         180,
         0
       ],
@@ -2666,7 +2666,7 @@
     },
     "thirdperson_lefthand": {
       "rotation": [
-        -55,
+        55,
         0,
         0
       ],
@@ -2683,7 +2683,7 @@
     },
     "firstperson_righthand": {
       "rotation": [
-        -25,
+        25,
         180,
         0
       ],
@@ -2700,7 +2700,7 @@
     },
     "firstperson_lefthand": {
       "rotation": [
-        -25,
+        25,
         0,
         0
       ],
