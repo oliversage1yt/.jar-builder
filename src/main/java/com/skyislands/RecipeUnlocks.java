@@ -110,7 +110,7 @@ public final class RecipeUnlocks {
 		}
 
 		player.awardRecipes(toAward);
-		player.playNotifySound(sound, SoundSource.PLAYERS, 1.0F, 1.0F);
+		player.level().playSound(null, player.blockPosition(), sound, SoundSource.PLAYERS, 1.0F, 1.0F);
 		ServerPlayNetworking.send(player, new RecipeUnlockPayload(shown));
 	}
 }

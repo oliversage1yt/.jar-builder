@@ -92,9 +92,9 @@ public final class PrismarineItems {
 	/** A swing must be at least this charged to sweep (a sword needs 90%). */
 	private static final float SWEEP_MIN_CHARGE = 0.9F;
 
-	/** Netherite's numbers (2031 uses, mining speed 9, enchantability 15) with 5 extra attack damage. */
+	/** Netherite's mining speed (9) and enchantability (15) with 5 extra attack damage, but the stone axe's durability (131 uses). */
 	private static final ToolMaterial MATERIAL = new ToolMaterial(
-		BlockTags.INCORRECT_FOR_NETHERITE_TOOL, 2031, 9.0F, MATERIAL_DAMAGE_BONUS, 15, REPAIR_TAG);
+		BlockTags.INCORRECT_FOR_NETHERITE_TOOL, 131, 9.0F, MATERIAL_DAMAGE_BONUS, 15, REPAIR_TAG);
 
 	public static Item PRISMARINE_STICK;
 	public static Item PRISMARINE_AXE;
