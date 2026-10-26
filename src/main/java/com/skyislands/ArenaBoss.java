@@ -113,6 +113,40 @@ public final class ArenaBoss {
 	private static final float SHIELD_DISABLE_CHANCE = 0.25F;
 	private static final int SHIELD_COOLDOWN_TICKS = 100;
 
+	/**
+	 * Axe phase: now and then the boss holds a Wind Spear out in front of it (the way a spear is held for a charge) and lunges at
+	 * the player, then goes back to its axe. The player can sidestep it (the dash keeps the direction it started in) or block it
+	 * with a Wind Spear of their own.
+	 */
+	private static final int LUNGE_NONE = 0;
+	private static final int LUNGE_WINDUP = 1;
+	private static final int LUNGE_DASH = 2;
+	private static final int LUNGE_RECOVER = 3;
+	/** Ticks the spear is held out before the dash, the longest the dash lasts, and ticks of recovery after it. */
+	private static final int LUNGE_WINDUP_TICKS = 14;
+	private static final int LUNGE_DASH_TICKS = 10;
+	private static final int LUNGE_RECOVER_TICKS = 14;
+	/** Blocks per tick during the dash (about 23 blocks a second). */
+	private static final double LUNGE_SPEED = 1.15;
+	/** The target must be between these horizontal distances (blocks) for a lunge to start; closer than that the axe is used. */
+	private static final double LUNGE_MIN_DISTANCE = 3.5;
+	private static final double LUNGE_MAX_DISTANCE = 9.0;
+	private static final double LUNGE_MAX_HEIGHT_GAP = 1.5;
+	/** The dash runs this far past where the target stood when it began, and a hit lands within this distance (squared). */
+	private static final double LUNGE_OVERSHOOT = 1.5;
+	private static final double LUNGE_HIT_REACH_SQR = 2.6 * 2.6;
+	private static final float LUNGE_DAMAGE = 10.0F;
+	/** Chance per tick to start a lunge once it is allowed (about once a second on average), and the pause after one (5 to 10 seconds). */
+	private static final float LUNGE_CHANCE = 0.05F;
+	private static final int LUNGE_COOLDOWN_MIN_TICKS = 100;
+	private static final int LUNGE_COOLDOWN_EXTRA_TICKS = 100;
+	private static final int LUNGE_FIRST_DELAY_TICKS = 80;
+	/**
+	 * The spear the boss lunges with carries this marker, so a client can tell it from the spear that is raised to be thrown (the
+	 * Illusioner's arm pose mixin shows the lunge spear held out in front instead of raised).
+	 */
+	private static final String LUNGE_SPEAR_COMPONENTS = "[minecraft:custom_model_data={strings:[\"lunge\"]}]";
+
 	private static final int PHASE_AXE = 0;
 	private static final int PHASE_BOW = 1;
 	private static final int PHASE_FANGS = 2;
@@ -132,13 +166,6 @@ public final class ArenaBoss {
 	private static final double SPEAR_SPEED = 2.2;
 	private static final double SPEAR_GRAVITY = 0.03;
 	private static final int SPEAR_MAX_AGE = 100;
-	private static final String SPEAR_TAG = "sky_islands_spear";
-	/**
-	 * The spear is a custom 3D item model (assets/sky_islands/models/item/boss_spear.json, shaft along +Z, tip at +Z) shown by an
-	 * item display; this is its size, and how far it turns about its own axis every tick as it flies (0 = no spin).
-	 */
-	private static final double SPEAR_MODEL_SCALE = 0.8;
-	private static final double SPEAR_SPIN_DEGREES_PER_TICK = 24.0;
 	/** After a gust, the boss throws a spear at each launched player once they are near the top of their flight (but not before this many ticks, and no later than the maximum). */
 	private static final int GUST_SPEAR_MIN_TICKS = 6;
 	private static final int GUST_SPEAR_MAX_TICKS = 16;
@@ -213,6 +240,16 @@ public final class ArenaBoss {
 		boolean shooting;
 		int shootTicks;
 		int unreachableTicks;
+		/** Axe phase spear lunge: where it is (LUNGE_*), ticks left of that step, the pause before the next one, and the dash. */
+		int lungeState;
+		int lungeTicks;
+		int lungeCooldown = LUNGE_FIRST_DELAY_TICKS;
+		double lungeDirX;
+		double lungeDirZ;
+		double lungeLeft;
+		double lungeLastX;
+		double lungeLastZ;
+		boolean lungeHit;
 		/** The last player the boss was fighting; re-targeted when the AI drops it (e.g. a pillar blocks line of sight). */
 		LivingEntity focus;
 		/** Arrow phase: how long the target has been out of sight, and how many ticks of arrow rain are left. */
@@ -286,13 +323,8 @@ public final class ArenaBoss {
 			if (boss != null) {
 				boss.bar.removeAllPlayers();
 			}
-		});
 
-		// A spear's display entity left over from before a restart or a crash would hang in the air forever.
-		ServerEntityEvents.ENTITY_LOAD.register((entity, level) -> {
-			if (!SPEAR_IDS.contains(entity.getUUID()) && tagsOf(entity).contains(SPEAR_TAG)) {
-				entity.discard();
-			}
+			BossBackProps.remove(level, entity.getUUID());
 		});
 
 		ServerLivingEntityEvents.AFTER_DEATH.register((entity, source) -> {
@@ -304,7 +336,8 @@ public final class ArenaBoss {
 
 	public static void clear() {
 		SPEARS.clear();
-		SPEAR_IDS.clear();
+		SpearVisual.clear();
+		BossBackProps.clear();
 		SCANNED.clear();
 		MARKERS.clear();
 
@@ -522,7 +555,7 @@ public final class ArenaBoss {
 
 	/** Entity tags, looked up by name because the getter was renamed between Minecraft versions. */
 	@SuppressWarnings("unchecked")
-	private static Set<String> tagsOf(Entity entity) {
+	static Set<String> tagsOf(Entity entity) {
 		if (!tagsLookedUp) {
 			tagsLookedUp = true;
 
@@ -640,6 +673,11 @@ public final class ArenaBoss {
 
 			if (!mob.isAlive() || mob.isRemoved() || !(mob.level() instanceof ServerLevel level)) {
 				boss.bar.removeAllPlayers();
+
+				if (mob.level() instanceof ServerLevel goneFrom) {
+					BossBackProps.remove(goneFrom, mob.getUUID());
+				}
+
 				it.remove();
 				continue;
 			}
@@ -676,6 +714,9 @@ public final class ArenaBoss {
 				tickWind(level, boss);
 				tickSpearThrow(level, boss);
 			}
+
+			// The bow and the Wind Spear on its back (each one is hidden while it is the weapon in the boss's hand).
+			BossBackProps.tick(level, mob);
 
 			if (boss.enraged && --boss.fangCooldown <= 0) {
 				LivingEntity target = mob.getTarget();
@@ -840,7 +881,6 @@ public final class ArenaBoss {
 	}
 
 	private static final List<Spear> SPEARS = new ArrayList<>();
-	private static final Set<UUID> SPEAR_IDS = new HashSet<>();
 
 	/**
 	 * While the target is farther away than the fangs reach, the boss holds a diamond spear raised (the same arm pose as the
@@ -864,7 +904,7 @@ public final class ArenaBoss {
 
 		if (!boss.holdingSpear) {
 			boss.holdingSpear = true;
-			setMainHand(level, mob, "minecraft:diamond_spear");
+			setMainHand(level, mob, bossSpearItem());
 		}
 
 		// "Aggressive" is what makes the model show the held item in the raised-arm pose.
@@ -908,63 +948,11 @@ public final class ArenaBoss {
 		double x = fromX + dx;
 		double y = fromY + dy;
 		double z = fromZ + dz;
-		UUID id = UUID.randomUUID();
-		SPEAR_IDS.add(id);
-
-		// A plain item whose model is replaced by the spear model: nothing a player could get, just something to show.
-		command(level, quietSource(level), String.format(Locale.ROOT,
-				"summon minecraft:item_display %.2f %.2f %.2f {UUID:%s,Tags:[\"%s\"],Rotation:[0f,0f],item:{id:\"minecraft:stick\",count:1,components:{\"minecraft:item_model\":\"sky_islands:boss_spear\"}},"
-						+ "item_display:\"none\",teleport_duration:1,start_interpolation:0,interpolation_duration:1,"
-						+ "transformation:{translation:[0f,0f,0f],left_rotation:%s,scale:[%.2ff,%.2ff,%.2ff],right_rotation:[0f,0f,0f,1f]}}",
-				x, y, z, uuidNbt(id), SPEAR_TAG, spearRotation(dx, dy, dz, 0), SPEAR_MODEL_SCALE, SPEAR_MODEL_SCALE, SPEAR_MODEL_SCALE));
+		UUID id = SpearVisual.spawn(level, "diamond", x, y, z, dx, dy, dz);
 		command(level, quietSource(level), String.format(Locale.ROOT, "playsound minecraft:item.trident.throw hostile @a %.1f %.1f %.1f 3.0 0.8", fromX, fromY, fromZ));
 		swingArm(mob);
 
 		SPEARS.add(new Spear(level, id, mob.getUUID(), x, y, z, dx * SPEAR_SPEED, dy * SPEAR_SPEED, dz * SPEAR_SPEED));
-	}
-
-	/**
-	 * The rotation (as an NBT quaternion list [x, y, z, w]) that turns the spear model, which points along +Z, to the direction
-	 * of flight (a unit vector), then spins it about that direction by the given number of ticks of spin.
-	 */
-	private static String spearRotation(double dx, double dy, double dz, int age) {
-		// Shortest turn from +Z to the flight direction d: axis (0,0,1) x d = (-dy, dx, 0), angle between them.
-		double qx;
-		double qy;
-		double qz;
-		double qw;
-
-		if (dz < -0.999999) {
-			qx = 0.0;
-			qy = 1.0;
-			qz = 0.0;
-			qw = 0.0;
-		} else {
-			qx = -dy;
-			qy = dx;
-			qz = 0.0;
-			qw = 1.0 + dz;
-			double norm = Math.sqrt(qx * qx + qy * qy + qz * qz + qw * qw);
-			qx /= norm;
-			qy /= norm;
-			qz /= norm;
-			qw /= norm;
-		}
-
-		double half = Math.toRadians(SPEAR_SPIN_DEGREES_PER_TICK * age) / 2.0;
-		double sin = Math.sin(half);
-		double ax = dx * sin;
-		double ay = dy * sin;
-		double az = dz * sin;
-		double aw = Math.cos(half);
-
-		// (the spin about d) applied after (the turn)
-		double rw = aw * qw - (ax * qx + ay * qy + az * qz);
-		double rx = aw * qx + qw * ax + (ay * qz - az * qy);
-		double ry = aw * qy + qw * ay + (az * qx - ax * qz);
-		double rz = aw * qz + qw * az + (ax * qy - ay * qx);
-
-		return String.format(Locale.ROOT, "[%.5ff,%.5ff,%.5ff,%.5ff]", rx, ry, rz, rw);
 	}
 
 	/** Moves every spear in flight, a short step at a time so nothing is skipped over: hits a player, a block, or falls out of the sky. */
@@ -976,8 +964,7 @@ public final class ArenaBoss {
 
 			if (!advanceSpear(spear)) {
 				it.remove();
-				SPEAR_IDS.remove(spear.id);
-				command(spear.level, quietSource(spear.level), "kill " + spear.id);
+				SpearVisual.remove(spear.level, spear.id);
 			}
 		}
 	}
@@ -1022,11 +1009,8 @@ public final class ArenaBoss {
 		spear.x += spear.vx;
 		spear.y += spear.vy;
 		spear.z += spear.vz;
-		// The model follows the spear and turns to point along its path (nose dipping as it falls) while it spins.
-		double speed = Math.sqrt(spear.vx * spear.vx + spear.vy * spear.vy + spear.vz * spear.vz);
-		command(level, quietSource(level), String.format(Locale.ROOT, "tp %s %.3f %.3f %.3f", spear.id, spear.x, spear.y, spear.z));
-		command(level, quietSource(level), String.format(Locale.ROOT, "data merge entity %s {start_interpolation:0,interpolation_duration:1,transformation:{left_rotation:%s}}",
-				spear.id, spearRotation(spear.vx / speed, spear.vy / speed, spear.vz / speed, spear.age)));
+		// The picture follows the spear and turns to point along its path (nose dipping as it falls) while it spins.
+		SpearVisual.move(level, spear.id, spear.x, spear.y, spear.z, spear.vx, spear.vy, spear.vz, spear.age);
 		return true;
 	}
 
@@ -1138,7 +1122,7 @@ public final class ArenaBoss {
 
 		if (!boss.holdingSpear) {
 			boss.holdingSpear = true;
-			setMainHand(level, boss.mob, "minecraft:diamond_spear");
+			setMainHand(level, boss.mob, bossSpearItem());
 		}
 	}
 
@@ -1297,6 +1281,11 @@ public final class ArenaBoss {
 		return health <= max * BOW_PHASE_HEALTH ? PHASE_BOW : PHASE_AXE;
 	}
 
+	/** The diamond Wind Spear the boss throws (the plain diamond spear if the Wind Spears did not register). */
+	private static String bossSpearItem() {
+		return WindSpears.registered("diamond") ? "sky_islands:diamond_windspear" : "minecraft:diamond_spear";
+	}
+
 	private static void setMainHand(ServerLevel level, Mob mob, String item) {
 		command(level, quietSource(level), "item replace entity " + mob.getUUID() + " weapon.mainhand with " + item);
 	}
@@ -1317,6 +1306,8 @@ public final class ArenaBoss {
 		setMirrorSpell(boss, phase != PHASE_AXE);
 
 		boss.shooting = false;
+		boss.lungeState = LUNGE_NONE;
+		boss.lungeCooldown = LUNGE_FIRST_DELAY_TICKS;
 		boss.unreachableTicks = 0;
 		boss.noSightTicks = 0;
 		boss.rainLeft = 0;
@@ -1531,6 +1522,10 @@ public final class ArenaBoss {
 		if (target == null || !target.isAlive()) {
 			boss.unreachableTicks = 0;
 
+			if (boss.lungeState != LUNGE_NONE) {
+				endLunge(level, boss);
+			}
+
 			if (!boss.shooting) {
 				mob.setAggressive(false);
 			}
@@ -1568,6 +1563,11 @@ public final class ArenaBoss {
 			return;
 		}
 
+		// Now and then: the spear held out, and a lunge at the target (while one is going on, nothing else is done).
+		if (tickLunge(level, boss, target)) {
+			return;
+		}
+
 		if (boss.unreachableTicks >= UNREACHABLE_TICKS) {
 			boss.shooting = true;
 			boss.shootTicks = 0;
@@ -1602,6 +1602,125 @@ public final class ArenaBoss {
 				disableShield(level, (Player) target, shield);
 			}
 		}
+	}
+
+	// ------------------------------------------------------------------ spear lunge (axe phase)
+
+	/**
+	 * The lunge: the boss takes a Wind Spear in hand and holds it out in front (the windup), dashes along a straight line at
+	 * where the target stood, hits the first thing it reaches, stands still for a moment and takes its axe back.
+	 * Returns true while a lunge is going on (the axe logic is skipped for that tick).
+	 */
+	private static boolean tickLunge(ServerLevel level, Boss boss, LivingEntity target) {
+		Mob mob = boss.mob;
+
+		if (boss.lungeState == LUNGE_NONE) {
+			if (boss.lungeCooldown > 0) {
+				boss.lungeCooldown--;
+				return false;
+			}
+
+			double dx = target.getX() - mob.getX();
+			double dz = target.getZ() - mob.getZ();
+			double flat = Math.sqrt(dx * dx + dz * dz);
+
+			if (flat < LUNGE_MIN_DISTANCE || flat > LUNGE_MAX_DISTANCE || Math.abs(target.getY() - mob.getY()) > LUNGE_MAX_HEIGHT_GAP
+					|| boss.unreachableTicks > 0 || !mob.hasLineOfSight(target) || mob.getRandom().nextFloat() >= LUNGE_CHANCE) {
+				return false;
+			}
+
+			boss.lungeState = LUNGE_WINDUP;
+			boss.lungeTicks = LUNGE_WINDUP_TICKS;
+			boss.lungeHit = false;
+			setMainHand(level, mob, bossSpearItem() + LUNGE_SPEAR_COMPONENTS);
+			mob.getNavigation().stop();
+			level.playSound(null, mob.blockPosition(), SoundEvents.EVOKER_PREPARE_ATTACK, SoundSource.HOSTILE, 1.5F, 1.5F);
+			return true;
+		}
+
+		// "Aggressive" is what makes the Illusioner's model show its weapon (and the held-out pose).
+		mob.setAggressive(true);
+		Vec3 motion = mob.getDeltaMovement();
+
+		if (boss.lungeState == LUNGE_WINDUP) {
+			mob.getNavigation().stop();
+			mob.setDeltaMovement(0.0, motion.y, 0.0);
+			mob.getLookControl().setLookAt(target, 60.0F, 60.0F);
+
+			if (--boss.lungeTicks <= 0) {
+				double dx = target.getX() - mob.getX();
+				double dz = target.getZ() - mob.getZ();
+				double flat = Math.sqrt(dx * dx + dz * dz);
+
+				if (flat < 1.0E-3) {
+					endLunge(level, boss);
+					return true;
+				}
+
+				boss.lungeDirX = dx / flat;
+				boss.lungeDirZ = dz / flat;
+				boss.lungeLeft = Math.min(flat + LUNGE_OVERSHOOT, LUNGE_MAX_DISTANCE + LUNGE_OVERSHOOT);
+				boss.lungeLastX = mob.getX();
+				boss.lungeLastZ = mob.getZ();
+				boss.lungeState = LUNGE_DASH;
+				boss.lungeTicks = LUNGE_DASH_TICKS;
+				command(level, quietSource(level), String.format(Locale.ROOT,
+						"playsound minecraft:entity.player.attack.sweep hostile @a %.1f %.1f %.1f 1.4 0.7", mob.getX(), mob.getY(), mob.getZ()));
+			}
+
+			return true;
+		}
+
+		if (boss.lungeState == LUNGE_DASH) {
+			// how far the last tick's push actually got (a wall or a ledge stops it short)
+			double moved = Math.hypot(mob.getX() - boss.lungeLastX, mob.getZ() - boss.lungeLastZ);
+			boolean first = boss.lungeTicks == LUNGE_DASH_TICKS;
+			boss.lungeLeft -= moved;
+			boss.lungeLastX = mob.getX();
+			boss.lungeLastZ = mob.getZ();
+			boolean blocked = !first && moved < LUNGE_SPEED * 0.3;
+
+			if (!boss.lungeHit && mob.distanceToSqr(target) <= LUNGE_HIT_REACH_SQR && Math.abs(target.getY() - mob.getY()) <= 2.0) {
+				boss.lungeHit = true;
+				swingArm(mob);
+
+				// Through the damage command with the boss as the attacker, like the axe: a shield or a Wind Spear block stops it.
+				command(level, quietSource(level), String.format(Locale.ROOT, "damage %s %.1f minecraft:mob_attack by %s",
+						target.getUUID(), LUNGE_DAMAGE, mob.getUUID()));
+				level.sendParticles(ParticleTypes.CLOUD, target.getX(), target.getY() + 1.0, target.getZ(), 12, 0.3, 0.4, 0.3, 0.05);
+			}
+
+			if (boss.lungeHit || blocked || boss.lungeLeft <= 0.1 || --boss.lungeTicks <= 0) {
+				mob.setDeltaMovement(0.0, motion.y, 0.0);
+				boss.lungeState = LUNGE_RECOVER;
+				boss.lungeTicks = LUNGE_RECOVER_TICKS;
+				return true;
+			}
+
+			double step = Math.min(LUNGE_SPEED, boss.lungeLeft);
+			mob.getNavigation().stop();
+			mob.setDeltaMovement(boss.lungeDirX * step, motion.y, boss.lungeDirZ * step);
+			level.sendParticles(ParticleTypes.CLOUD, mob.getX(), mob.getY() + 0.1, mob.getZ(), 2, 0.2, 0.05, 0.2, 0.01);
+			return true;
+		}
+
+		// recovering: standing still with the spear out, then the axe again
+		mob.getNavigation().stop();
+		mob.setDeltaMovement(0.0, motion.y, 0.0);
+
+		if (--boss.lungeTicks <= 0) {
+			endLunge(level, boss);
+		}
+
+		return true;
+	}
+
+	/** Ends a lunge (finished, or the target is gone): the axe is back in hand and the next lunge is a while away. */
+	private static void endLunge(ServerLevel level, Boss boss) {
+		boss.lungeState = LUNGE_NONE;
+		boss.lungeCooldown = LUNGE_COOLDOWN_MIN_TICKS + boss.mob.getRandom().nextInt(LUNGE_COOLDOWN_EXTRA_TICKS);
+		boss.axeCooldown = Math.max(boss.axeCooldown, 10);
+		setMainHand(level, boss.mob, "minecraft:diamond_axe");
 	}
 
 	/** Plays the arm swing. Looked up by reflection because the signature differs between Minecraft versions. */
@@ -1824,7 +1943,7 @@ public final class ArenaBoss {
 		return null;
 	}
 
-	private static String uuidNbt(UUID id) {
+	static String uuidNbt(UUID id) {
 		return String.format(Locale.ROOT, "[I;%d,%d,%d,%d]",
 				(int) (id.getMostSignificantBits() >>> 32), (int) id.getMostSignificantBits(),
 				(int) (id.getLeastSignificantBits() >>> 32), (int) id.getLeastSignificantBits());
@@ -2035,6 +2154,8 @@ public final class ArenaBoss {
 		if (boss != null) {
 			boss.bar.removeAllPlayers();
 		}
+
+		BossBackProps.remove(level, entity.getUUID());
 
 		// Rolled here rather than from a loot table: the loot table's count/enchant functions were being ignored.
 		var random = level.getRandom();

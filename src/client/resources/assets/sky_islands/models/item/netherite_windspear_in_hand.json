@@ -1,0 +1,6 @@
+{
+  "parent": "minecraft:item/netherite_spear_in_hand",
+  "textures": {
+    "layer0": "sky_islands:item/netherite_windspear_in_hand"
+  }
+}

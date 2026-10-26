@@ -42,6 +42,10 @@ public final class ClientConfig {
 	public static double cloudBaseY = 260;
 	public static double cloudHeightVariation = 120;
 
+	// ---- rain
+	/** No rain (and no rain-darkened sky) is shown when you are above the clouds. */
+	public static boolean hideRainAboveClouds = true;
+
 	// ---- golden foliage on islands over temperate biomes
 	public static boolean goldenFoliage = true;
 	public static int goldenFoliageMinY = 120;
@@ -82,6 +86,7 @@ public final class ClientConfig {
 		orangeGrassMinY = integer(p, "orangeGrassMinY", orangeGrassMinY);
 		goldenFoliage = bool(p, "goldenFoliage", goldenFoliage);
 		goldenFoliageMinY = integer(p, "goldenFoliageMinY", goldenFoliageMinY);
+		hideRainAboveClouds = bool(p, "hideRainAboveClouds", hideRainAboveClouds);
 
 		// write the file back (adds any new keys, keeps the file self-documenting)
 		Properties out = p;
@@ -105,6 +110,7 @@ public final class ClientConfig {
 		out.setProperty("orangeGrassMinY", String.valueOf(orangeGrassMinY));
 		out.setProperty("goldenFoliage", String.valueOf(goldenFoliage));
 		out.setProperty("goldenFoliageMinY", String.valueOf(goldenFoliageMinY));
+		out.setProperty("hideRainAboveClouds", String.valueOf(hideRainAboveClouds));
 
 		try (OutputStream os = Files.newOutputStream(file)) {
 			out.store(os, "Sky Islands {Islands} client settings. 20 ticks = 1 second. Delete a line to restore its default.");

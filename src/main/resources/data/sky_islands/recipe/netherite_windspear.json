@@ -1,0 +1,9 @@
+{
+  "type": "minecraft:smithing_transform",
+  "template": "minecraft:netherite_upgrade_smithing_template",
+  "base": "sky_islands:diamond_windspear",
+  "addition": "minecraft:netherite_ingot",
+  "result": {
+    "id": "sky_islands:netherite_windspear"
+  }
+}

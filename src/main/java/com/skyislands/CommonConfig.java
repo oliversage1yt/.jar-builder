@@ -30,6 +30,11 @@ public final class CommonConfig {
 	/** Respawning the boss puts the lower part of the arena (where the boss fights) back as it generated; the upper part keeps player changes. */
 	public static boolean arenaResetOnRespawn = true;
 
+	/** During rain and thunderstorms, drowned holding copper Wind Spears (which they throw) spawn on sky islands. */
+	public static boolean rainDrowned = true;
+	/** Most rain drowned that can be around one player at once (doubled-ish in a thunderstorm). */
+	public static int rainDrownedMax = 3;
+
 	public static void load() {
 		Path file = FabricLoader.getInstance().getConfigDir().resolve("sky_islands.properties");
 		Properties p = new Properties();
@@ -51,12 +56,16 @@ public final class CommonConfig {
 		arenaBossRegen = Math.max(0.0, dbl(p, "arenaBossRegen", arenaBossRegen));
 
 		arenaResetOnRespawn = bool(p, "arenaResetOnRespawn", arenaResetOnRespawn);
+		rainDrowned = bool(p, "rainDrowned", rainDrowned);
+		rainDrownedMax = (int) Math.max(0, Math.min(20, dbl(p, "rainDrownedMax", rainDrownedMax)));
 
 		p.remove("arenaRespawnItems"); // setting from a previous version (the respawn item is now always a plain Book)
 
 		p.setProperty("arenaBossHealth", String.valueOf(arenaBossHealth));
 		p.setProperty("arenaBossRegen", String.valueOf(arenaBossRegen));
 		p.setProperty("arenaResetOnRespawn", String.valueOf(arenaResetOnRespawn));
+		p.setProperty("rainDrowned", String.valueOf(rainDrowned));
+		p.setProperty("rainDrownedMax", String.valueOf(rainDrownedMax));
 		p.setProperty("lightThroughIslands", String.valueOf(lightThroughIslands));
 		p.setProperty("skyMaps", String.valueOf(skyMaps));
 		p.setProperty("naturalFluidsContained", String.valueOf(naturalFluidsContained));

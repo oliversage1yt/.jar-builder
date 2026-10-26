@@ -1,0 +1,73 @@
+{
+  "parent": "sky_islands:item/golden_windspear_in_hand",
+  "display": {
+    "firstperson_righthand": {
+      "rotation": [
+        0,
+        0,
+        -20
+      ],
+      "translation": [
+        -1.0,
+        3.0,
+        1.0
+      ],
+      "scale": [
+        0.9,
+        0.9,
+        0.45
+      ]
+    },
+    "firstperson_lefthand": {
+      "rotation": [
+        0,
+        0,
+        20
+      ],
+      "translation": [
+        1.0,
+        3.0,
+        1.0
+      ],
+      "scale": [
+        0.9,
+        0.9,
+        0.45
+      ]
+    },
+    "thirdperson_righthand": {
+      "rotation": [
+        0,
+        0,
+        30
+      ],
+      "translation": [
+        -5,
+        0,
+        -1
+      ],
+      "scale": [
+        1.7,
+        1.7,
+        0.85
+      ]
+    },
+    "thirdperson_lefthand": {
+      "rotation": [
+        0,
+        0,
+        -120
+      ],
+      "translation": [
+        5,
+        0,
+        -1
+      ],
+      "scale": [
+        1.7,
+        1.7,
+        0.85
+      ]
+    }
+  }
+}

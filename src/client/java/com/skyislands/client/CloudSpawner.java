@@ -49,8 +49,7 @@ public final class CloudSpawner {
 		}
 	}
 
-	/** Smooth, slowly varying value in [-1, 1] (a stand-in for the original's very low frequency simplex noise). */
 	private static double noise(double x, double z) {
-		return 0.5 * Math.sin(x / 9000.0 + 1.3 * Math.sin(z / 13000.0)) + 0.5 * Math.sin(z / 11000.0 + 0.7 * Math.cos(x / 15000.0));
+		return com.skyislands.world.CloudDeck.noise(x, z);
 	}
 }

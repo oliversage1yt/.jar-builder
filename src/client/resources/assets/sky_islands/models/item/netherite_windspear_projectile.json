@@ -1,0 +1,6 @@
+{
+  "parent": "minecraft:item/generated",
+  "textures": {
+    "layer0": "sky_islands:item/netherite_windspear_in_hand"
+  }
+}

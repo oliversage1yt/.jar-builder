@@ -1,0 +1,16 @@
+{
+  "type": "minecraft:crafting_shaped",
+  "category": "equipment",
+  "pattern": [
+    "  M",
+    " R ",
+    "R  "
+  ],
+  "key": {
+    "M": "minecraft:copper_ingot",
+    "R": "minecraft:breeze_rod"
+  },
+  "result": {
+    "id": "sky_islands:copper_windspear"
+  }
+}

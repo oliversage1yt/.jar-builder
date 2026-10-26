@@ -24,4 +24,10 @@ public final class Tuning {
 	public static final int ISLAND_GAP = 24;
 	/** A map first used at or above this height becomes a "sky map" that shows the islands. */
 	public static final int SKY_MAP_MIN_Y = 140;
+
+	/** Default height of the cloud deck and how far it rolls up and down (the client settings cloudBaseY / cloudHeightVariation). */
+	public static final double CLOUD_BASE_Y = 260.0;
+	public static final double CLOUD_VARIATION = 120.0;
+	/** The cloud particles of one spot spread this far above and below the deck's height. */
+	public static final double CLOUD_HALF_THICKNESS = 22.0;
 }

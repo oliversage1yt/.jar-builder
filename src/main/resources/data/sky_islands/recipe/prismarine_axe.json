@@ -1,0 +1,17 @@
+{
+  "type": "minecraft:crafting_shaped",
+  "category": "equipment",
+  "pattern": [
+    "SDS",
+    "S| ",
+    " | "
+  ],
+  "key": {
+    "S": "minecraft:prismarine_shard",
+    "D": "minecraft:dark_prismarine",
+    "|": "sky_islands:prismarine_stick"
+  },
+  "result": {
+    "id": "sky_islands:prismarine_axe"
+  }
+}

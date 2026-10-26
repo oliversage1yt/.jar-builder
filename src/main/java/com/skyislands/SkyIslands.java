@@ -23,11 +23,18 @@ public class SkyIslands implements ModInitializer {
 		CommonConfig.load();
 		ServerChunkEvents.CHUNK_GENERATE.register(GroundFreezer::onGenerate);
 		ServerTickEvents.END_SERVER_TICK.register(GroundFreezer::tick);
+		WindSpears.register();
+		PrismarineItems.register();
+		RainDrowned.register();
+		SpearVisual.register();
 		ArenaBoss.register();
 		GlowingObsidian.register();
 		ServerLifecycleEvents.SERVER_STOPPED.register(server -> {
 			GroundFreezer.clear();
 			ArenaBoss.clear();
+			WindSpears.clear();
+			PrismarineItems.clear();
+			RainDrowned.clear();
 			com.skyislands.world.IslandColumns.clear();
 		});
 		LOGGER.info("Sky Islands {Islands} loaded.");

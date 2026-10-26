@@ -1,0 +1,14 @@
+{
+	"required": false,
+	"package": "com.skyislands.client.mixin",
+	"compatibilityLevel": "JAVA_25",
+	"client": [
+		"RainLevelMixin",
+		"LivingEntityRendererBlockPoseMixin",
+		"HumanoidModelBlockPoseMixin",
+		"LivingEntityRendererCloneMixin"
+	],
+	"injectors": {
+		"defaultRequire": 0
+	}
+}

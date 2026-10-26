@@ -20,7 +20,11 @@
 		]
 	},
 	"mixins": [
-		"sky_islands.mixins.json"
+		"sky_islands.mixins.json",
+		{
+			"config": "sky_islands.client.mixins.json",
+			"environment": "client"
+		}
 	],
 	"depends": {
 		"fabricloader": ">=0.19.5",

@@ -1,0 +1,6 @@
+{
+  "parent": "minecraft:item/iron_spear_in_hand",
+  "textures": {
+    "layer0": "sky_islands:item/iron_windspear_in_hand"
+  }
+}
