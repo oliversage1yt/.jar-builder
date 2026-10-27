@@ -92,6 +92,7 @@ public final class WindSpears {
 	private static final String PIERCING = "minecraft:piercing";
 	private static final String QUICK_CHARGE = "minecraft:quick_charge";
 	private static final String WIND_BURST = "minecraft:wind_burst";
+	private static final String LUNGE = "minecraft:lunge";
 	/** Hotbar cooldowns are shared by every stack of an item unless the stack names its own cooldown group: riptide spears get this one. */
 	private static final Identifier RIPTIDE_COOLDOWN_GROUP = SkyIslands.id("riptide_windspear");
 	/** The block's cooldown group, used by the Wind Spears without Riptide (so it never locks a Riptide spear, and the other way round). */
@@ -130,11 +131,29 @@ public final class WindSpears {
 	private static final int BURST_COOLDOWN_TICKS = 40;
 	/** A Riptide + Wind Burst spear launches its holder this many times before they have to land (a double jump). */
 	private static final int MAX_POKE_BURSTS = 2;
+	/** The shortest wait between two poke launches (half a second): a double click cannot launch twice. */
+	private static final int POKE_BURST_COOLDOWN_TICKS = 10;
 	/**
-	 * The wait between two poke launches (1 second). It is long enough for a Lunge jab to fit in between, so a double jump can
-	 * be chained as Wind Burst, Lunge, Wind Burst: presses of attack during this wait are plain vanilla jabs.
+	 * A Riptide + Wind Burst spear that also has Lunge keeps its two launches apart by a Lunge: after a launch, the next press of
+	 * attack is the Lunge jab and launches nothing, and only the press after that can launch again (Wind Burst, Lunge, Wind
+	 * Burst). A launch that is not followed by a Lunge press within this many ticks (2 seconds) stops waiting for one.
 	 */
-	private static final int POKE_BURST_COOLDOWN_TICKS = 20;
+	private static final int LUNGE_WAIT_TICKS = 40;
+	/** After the Lunge press, the next press may launch only after this many ticks, so one stroke cannot do both. */
+	private static final int POKE_AFTER_LUNGE_TICKS = 6;
+	/**
+	 * Soft landing: a Riptide + Wind Burst poke that comes this many ticks (half a second) or less before the ground makes a
+	 * burst, and the fall damage of that landing is cut by SOFT_LANDING_REDUCTION.
+	 */
+	private static final int SOFT_LANDING_WINDOW_TICKS = 10;
+	/** The cut in fall damage (90%). */
+	private static final float SOFT_LANDING_REDUCTION = 0.9F;
+	/** How long a soft landing is good for (the landing must come within this many ticks of the poke). */
+	private static final int SOFT_LANDING_VALID_TICKS = 20;
+	/** A fall shorter than this many blocks does no damage, so a poke after it saves nothing (it launches as usual). */
+	private static final double SOFT_LANDING_MIN_FALL = 3.0;
+	/** How far down to look for the ground (blocks). */
+	private static final int SOFT_LANDING_SCAN_BLOCKS = 40;
 
 	/** Arrows keep 60% of their speed per tick in water; a Wind Spear does the same. */
 	private static final double WATER_DRAG = 0.6;
@@ -163,6 +182,14 @@ public final class WindSpears {
 	private static final Map<UUID, Integer> BURST_LAST = new HashMap<>();
 	/** The next tick a player's poke may launch again: until then attack only jabs (so a Lunge can come between the two launches of a double jump). */
 	private static final Map<UUID, Integer> NEXT_POKE = new HashMap<>();
+	/** Players whose last poke launch is waiting for a Lunge press (value: the tick of that launch). */
+	private static final Map<UUID, Integer> LUNGE_WAIT = new HashMap<>();
+	/** Players who poked just before landing: the last tick their fall damage is still cut. */
+	private static final Map<UUID, Integer> SOFT_LANDING_UNTIL = new HashMap<>();
+	/** Each player's height a tick ago, how fast they moved up (negative: down) last tick, and how far they have fallen so far. */
+	private static final Map<UUID, Double> LAST_Y = new HashMap<>();
+	private static final Map<UUID, Double> SPEED_Y = new HashMap<>();
+	private static final Map<UUID, Double> FALLEN = new HashMap<>();
 	/** Players who were blocking last tick, to see the moment a block starts. */
 	private static final Set<UUID> WAS_BLOCKING = new HashSet<>();
 	/** Players currently holding the block (value: the tick of the client's last message). */
@@ -241,6 +268,7 @@ public final class WindSpears {
 			pokeBurst(context.player(), context.server().getTickCount());
 		});
 		ServerLivingEntityEvents.ALLOW_DAMAGE.register((entity, source, amount) -> !blocks(entity, source));
+		ServerLivingEntityEvents.ALLOW_DAMAGE.register((entity, source, amount) -> !softLanding(entity, source, amount));
 	}
 
 	public static void clear() {
@@ -251,6 +279,11 @@ public final class WindSpears {
 		BURST_USES.clear();
 		BURST_LAST.clear();
 		NEXT_POKE.clear();
+		LUNGE_WAIT.clear();
+		SOFT_LANDING_UNTIL.clear();
+		LAST_Y.clear();
+		SPEED_Y.clear();
+		FALLEN.clear();
 		WAS_BLOCKING.clear();
 		BLOCK_HELD.clear();
 		BLOCK_LAST.clear();
@@ -623,6 +656,14 @@ public final class WindSpears {
 			if (last != null && now - last > 5 && landed(player)) {
 				BURST_USES.remove(player.getUUID());
 				BURST_LAST.remove(player.getUUID());
+				LUNGE_WAIT.remove(player.getUUID());
+			}
+
+			trackFall(player);
+			Integer cushion = SOFT_LANDING_UNTIL.get(player.getUUID());
+
+			if (cushion != null && cushion < now) {
+				SOFT_LANDING_UNTIL.remove(player.getUUID());
 			}
 
 			if (blocking) {
@@ -890,7 +931,7 @@ public final class WindSpears {
 
 		int burst = levelOf(stack, WIND_BURST);
 
-		if (burst <= 0 || levelOf(stack, RIPTIDE) <= 0 || NEXT_POKE.getOrDefault(player.getUUID(), 0) > now) {
+		if (burst <= 0 || levelOf(stack, RIPTIDE) <= 0) {
 			return;
 		}
 
@@ -898,8 +939,27 @@ public final class WindSpears {
 			return;
 		}
 
+		// a poke just before the ground is a soft landing, not a launch
+		if (cushionLanding(level, player, stack, burst, now)) {
+			return;
+		}
+
+		UUID id = player.getUUID();
+
+		// with Lunge, the press after a launch is the Lunge jab (the game's own business), not another launch
+		Integer waiting = LUNGE_WAIT.remove(id);
+
+		if (waiting != null && levelOf(stack, LUNGE) > 0 && now - waiting < LUNGE_WAIT_TICKS) {
+			NEXT_POKE.put(id, now + POKE_AFTER_LUNGE_TICKS);
+			return;
+		}
+
+		if (NEXT_POKE.getOrDefault(id, 0) > now) {
+			return;
+		}
+
 		// two launches per flight (a double jump): after that the burst is back once the player has landed
-		if (BURST_USES.getOrDefault(player.getUUID(), 0) >= MAX_POKE_BURSTS) {
+		if (BURST_USES.getOrDefault(id, 0) >= MAX_POKE_BURSTS) {
 			return;
 		}
 
@@ -908,9 +968,14 @@ public final class WindSpears {
 			return;
 		}
 
-		NEXT_POKE.put(player.getUUID(), now + POKE_BURST_COOLDOWN_TICKS);
-		BURST_USES.merge(player.getUUID(), 1, Integer::sum);
-		BURST_LAST.put(player.getUUID(), now);
+		NEXT_POKE.put(id, now + POKE_BURST_COOLDOWN_TICKS);
+		BURST_USES.merge(id, 1, Integer::sum);
+		BURST_LAST.put(id, now);
+
+		// a launch that has another one to come waits for a Lunge in between
+		if (levelOf(stack, LUNGE) > 0 && BURST_USES.get(id) < MAX_POKE_BURSTS) {
+			LUNGE_WAIT.put(id, now);
+		}
 
 		double[] look = lookOf(player);
 		double flat = Math.sqrt(look[0] * look[0] + look[2] * look[2]);
@@ -920,12 +985,127 @@ public final class WindSpears {
 		launch(level, player, new Vec3(fx, burstLift(burst), fz));
 		// like a mace's wind burst, the landing from this launch does not hurt
 		player.resetFallDistance();
+		FALLEN.remove(id);
 
 		burstEffects(level, player.getX(), player.getY(), player.getZ(), burst);
 
 		if (!player.isCreative() && wear(stack, player)) {
 			stack.shrink(1);
 		}
+	}
+
+	// ------------------------------------------------------------------ soft landing
+
+	/** Every tick, for every player: how fast they are moving up or down, and how far they have fallen since they last rose or stood. */
+	private static void trackFall(ServerPlayer player) {
+		UUID id = player.getUUID();
+		double y = player.getY();
+		Double before = LAST_Y.put(id, y);
+		double speed = before == null ? 0.0 : y - before;
+		SPEED_Y.put(id, speed);
+
+		if (landed(player) || speed >= 0.0) {
+			FALLEN.remove(id);
+		} else {
+			FALLEN.merge(id, -speed, Double::sum);
+		}
+	}
+
+	/** How far (blocks) the player would fall in the given number of ticks at their present speed, with gravity and drag. */
+	private static double fallIn(double speed, int ticks) {
+		double v = speed;
+		double distance = 0.0;
+
+		for (int i = 0; i < ticks; i++) {
+			distance += Math.max(0.0, -v);
+			v = (v - 0.08) * 0.98;
+		}
+
+		return distance;
+	}
+
+	/** How far below the player's feet the first block they would land on is (blocks), or -1 if there is none in reach. */
+	private static double groundBelow(ServerLevel level, ServerPlayer player) {
+		int x = (int) Math.floor(player.getX());
+		int z = (int) Math.floor(player.getZ());
+		int top = (int) Math.floor(player.getY() - 1.0E-3);
+
+		for (int by = top; by >= top - SOFT_LANDING_SCAN_BLOCKS; by--) {
+			BlockPos pos = new BlockPos(x, by, z);
+
+			if (!level.hasChunkAt(pos)) {
+				return -1.0;
+			}
+
+			if (!level.getBlockState(pos).getCollisionShape(level, pos).isEmpty()) {
+				return player.getY() - (by + 1);
+			}
+		}
+
+		return -1.0;
+	}
+
+	/**
+	 * A Riptide + Wind Burst poke made falling, within half a second of the ground (and after a fall that would hurt): the wind
+	 * cushions the landing instead of launching. A burst goes off, and the fall damage of the landing that follows is cut by 90%
+	 * (see {@link #softLanding}). Costs a use of the spear, like a launch. Returns true when it was a soft landing.
+	 */
+	private static boolean cushionLanding(ServerLevel level, ServerPlayer player, ItemStack stack, int burst, int now) {
+		UUID id = player.getUUID();
+		double speed = SPEED_Y.getOrDefault(id, 0.0);
+
+		if (landed(player) || speed > -0.2 || FALLEN.getOrDefault(id, 0.0) <= SOFT_LANDING_MIN_FALL) {
+			return false;
+		}
+
+		double ground = groundBelow(level, player);
+
+		if (ground < 0.0 || ground > fallIn(speed, SOFT_LANDING_WINDOW_TICKS)) {
+			return false;
+		}
+
+		if (windBlocked(player)) {
+			return false;
+		}
+
+		if (SOFT_LANDING_UNTIL.getOrDefault(id, -1) >= now) {
+			// already cushioned: another press changes nothing
+			return true;
+		}
+
+		SOFT_LANDING_UNTIL.put(id, now + SOFT_LANDING_VALID_TICKS);
+		burstEffects(level, player.getX(), player.getY(), player.getZ(), burst);
+
+		if (!player.isCreative() && wear(stack, player)) {
+			stack.shrink(1);
+		}
+
+		return true;
+	}
+
+	/**
+	 * The fall damage of a landing that was cushioned: the hit is cancelled and 10% of it is dealt instead. (The cushion is spent
+	 * first, so the smaller hit is not cut again.) Returns true when the original hit was replaced.
+	 */
+	private static boolean softLanding(LivingEntity entity, DamageSource source, float amount) {
+		if (!(entity instanceof ServerPlayer player) || !source.is(DamageTypeTags.IS_FALL)) {
+			return false;
+		}
+
+		Integer until = SOFT_LANDING_UNTIL.remove(player.getUUID());
+
+		if (until == null || !(player.level() instanceof ServerLevel level) || level.getServer().getTickCount() > until) {
+			return false;
+		}
+
+		level.sendParticles(ParticleTypes.CLOUD, player.getX(), player.getY() + 0.1, player.getZ(), 16, 0.5, 0.1, 0.5, 0.1);
+		float rest = amount * (1.0F - SOFT_LANDING_REDUCTION);
+
+		if (rest > 0.0F) {
+			player.hurtServer(level, source, rest);
+		}
+
+		return true;
 	}
 
 	/** A spear with Wind Burst but without Riptide, the moment its holder starts to block: whatever they look at is thrown up. */
