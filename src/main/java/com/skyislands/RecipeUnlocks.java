@@ -56,6 +56,10 @@ public final class RecipeUnlocks {
 		GROUPS.add(new Group(s -> s.is(Items.PRISMARINE_SHARD), List.of("prismarine_stick")));
 		GROUPS.add(new Group(s -> s.is(Items.PRISMARINE_SHARD) || s.is(Items.DARK_PRISMARINE) || s.is(PrismarineItems.PRISMARINE_STICK),
 				List.of("prismarine_axe")));
+		GROUPS.add(new Group(s -> s.is(Items.PRISMARINE_SHARD) || s.is(Items.PRISMARINE_CRYSTALS) || s.is(PrismarineItems.PRISMARINE_STICK),
+				List.of("prismarine_arrow")));
+		GROUPS.add(new Group(s -> s.is(Items.DARK_PRISMARINE) || s.is(Items.PRISMARINE_CRYSTALS) || s.is(PrismarineItems.PRISMARINE_STICK),
+				List.of("prismarine_bow")));
 		GROUPS.add(new Group(s -> s.is(Items.BREEZE_ROD) || isWindSpear(s),
 				List.of("wooden_windspear", "stone_windspear", "copper_windspear", "iron_windspear", "golden_windspear", "diamond_windspear")));
 		GROUPS.add(new Group(s -> s.is(Items.NETHERITE_INGOT) || BuiltInRegistries.ITEM.getKey(s.getItem()).equals(SkyIslands.id("diamond_windspear"))

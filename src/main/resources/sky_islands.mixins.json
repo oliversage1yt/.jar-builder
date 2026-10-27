@@ -7,7 +7,8 @@
 		"ChunkSkyLightSourcesMixin",
 		"MapItemMixin",
 		"FlowingFluidMixin",
-		"IllusionerAxePoseMixin"
+		"IllusionerAxePoseMixin",
+		"PrismarineBowDamageMixin"
 	],
 	"injectors": {
 		"defaultRequire": 0

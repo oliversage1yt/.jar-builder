@@ -1,0 +1,19 @@
+{
+  "type": "minecraft:crafting_shaped",
+  "category": "equipment",
+  "pattern": [
+    "S",
+    "|",
+    "C"
+  ],
+  "key": {
+    "S": "minecraft:prismarine_shard",
+    "|": "sky_islands:prismarine_stick",
+    "C": "minecraft:prismarine_crystals"
+  },
+  "result": {
+    "id": "sky_islands:prismarine_arrow",
+    "count": 4
+  },
+  "show_notification": false
+}

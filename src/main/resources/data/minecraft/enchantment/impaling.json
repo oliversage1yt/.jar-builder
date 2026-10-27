@@ -37,6 +37,16 @@
                   }
                 }
               }
+            },
+            {
+              "type": "minecraft:inverted",
+              "term": {
+                "type": "minecraft:entity_properties",
+                "entity": "direct_attacker",
+                "predicate": {
+                  "minecraft:entity_type": "#minecraft:arrows"
+                }
+              }
             }
           ]
         }
@@ -59,6 +69,23 @@
                 "items": "#sky_islands:prismarine_axes"
               }
             }
+          }
+        }
+      },
+      {
+        "effect": {
+          "type": "minecraft:add",
+          "value": {
+            "type": "minecraft:linear",
+            "base": 0.5,
+            "per_level_above_first": 0.5
+          }
+        },
+        "requirements": {
+          "type": "minecraft:entity_properties",
+          "entity": "direct_attacker",
+          "predicate": {
+            "minecraft:entity_type": "#minecraft:arrows"
           }
         }
       }

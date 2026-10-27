@@ -1,0 +1,6 @@
+{
+  "parent": "minecraft:item/bow",
+  "textures": {
+    "layer0": "sky_islands:item/prismarine_bow_half_pull"
+  }
+}

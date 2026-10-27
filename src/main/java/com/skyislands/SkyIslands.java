@@ -25,6 +25,7 @@ public class SkyIslands implements ModInitializer {
 		ServerTickEvents.END_SERVER_TICK.register(GroundFreezer::tick);
 		WindSpears.register();
 		PrismarineItems.register();
+		PrismarineBows.register();
 		RecipeUnlocks.register();
 		RainDrowned.register();
 		SpearVisual.register();
@@ -35,6 +36,7 @@ public class SkyIslands implements ModInitializer {
 			ArenaBoss.clear();
 			WindSpears.clear();
 			PrismarineItems.clear();
+			PrismarineBows.clear();
 			RainDrowned.clear();
 			com.skyislands.world.IslandColumns.clear();
 		});

@@ -1,6 +1,7 @@
 {
   "values": [
     "#minecraft:enchantable/trident",
-    "sky_islands:prismarine_axe"
+    "sky_islands:prismarine_axe",
+    "sky_islands:prismarine_bow"
   ]
 }
