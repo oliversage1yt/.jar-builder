@@ -23,7 +23,6 @@ import net.minecraft.resources.Identifier;
 import net.minecraft.resources.ResourceKey;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.world.entity.Entity;
-import net.minecraft.world.entity.EntityType;
 import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.item.ArrowItem;
@@ -68,7 +67,7 @@ public final class PrismarineBows {
 	/** Arrows shot from anything but the Prismarine Bow leave at this part of the normal speed (less range, a little less damage). */
 	static final float ARROW_RANGE_FACTOR = 0.75F;
 	/** Final damage of an arrow from the Prismarine Bow, as a multiple of what the same arrow does from a normal bow. */
-	static final float BOW_DAMAGE_MULTIPLIER = 2.0F;
+	public static final float BOW_DAMAGE_MULTIPLIER = 2.0F;
 	/** The vanilla bow has 384 uses; half as many is the same as wearing out twice as fast, whatever Unbreaking does. */
 	private static final int BOW_DURABILITY = 192;
 	/** The Prismarine Bow takes this many times as long to draw (20 ticks to full power in vanilla, so 40 here). */
@@ -138,18 +137,23 @@ public final class PrismarineBows {
 
 	/** True for an arrow that the Prismarine Bow shot (the damage mixin asks this of the entity that did the hitting). */
 	public static boolean firedFromPrismarineBow(Entity entity) {
-		return entity != null && entity.getTags().contains(BOW_ARROW_TAG);
+		return entity != null && ArenaBoss.tagsOf(entity).contains(BOW_ARROW_TAG);
 	}
 
 	// ------------------------------------------------------------------ the arrow entity
 
+	/** An arrow entity, told by its registry name (the entity type constants are not needed). */
+	private static boolean isArrow(Entity entity) {
+		return BuiltInRegistries.ENTITY_TYPE.getKey(entity.getType()).getPath().equals("arrow");
+	}
+
 	/** A new arrow in the world (shot, dispensed, or loaded from a saved chunk): mark it, slow it, and start watching it. */
 	private static void onEntityLoad(Entity entity) {
-		if (PRISMARINE_ARROW == null || entity.getType() != EntityType.ARROW) {
+		if (PRISMARINE_ARROW == null || !isArrow(entity)) {
 			return;
 		}
 
-		if (!entity.getTags().contains(ARROW_TAG)) {
+		if (!ArenaBoss.tagsOf(entity).contains(ARROW_TAG)) {
 			// the first time this arrow is seen: is it a Prismarine Arrow?
 			if (!carriesPrismarineArrow(entity)) {
 				return;
