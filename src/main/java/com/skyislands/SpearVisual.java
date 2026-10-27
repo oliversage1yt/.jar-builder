@@ -70,7 +70,9 @@ final class SpearVisual {
 		ArenaBoss.command(level, ArenaBoss.quietSource(level), String.format(Locale.ROOT,
 				"summon minecraft:item_display %.2f %.2f %.2f {UUID:%s,Tags:[\"%s\"],Rotation:[0f,0f],"
 						+ "item:{id:\"%s\",count:1},"
-						+ "item_display:\"none\",teleport_duration:1,start_interpolation:0,interpolation_duration:1,"
+						// no interpolation on the first frame: a new display otherwise glides in from the default size and angle (each
+						// move after this one sets the one-tick glide itself)
+						+ "item_display:\"none\",teleport_duration:1,start_interpolation:0,interpolation_duration:0,"
 						+ "transformation:{translation:[0f,0f,0f],left_rotation:%s,scale:[%.2ff,%.2ff,%.2ff],right_rotation:[0f,0f,0f,1f]}}",
 				x, y, z, ArenaBoss.uuidNbt(id), TAG, itemId, rotation(dx, dy, dz, 0, tipX, tipY), scale, scale, scale));
 		return id;

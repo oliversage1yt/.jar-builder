@@ -26,6 +26,8 @@ public class SkyIslands implements ModInitializer {
 		WindSpears.register();
 		PrismarineItems.register();
 		PrismarineBows.register();
+		ThrownPrismarineArrows.register();
+		PrismarineDrowned.register();
 		RecipeUnlocks.register();
 		RainDrowned.register();
 		SpearVisual.register();
@@ -37,6 +39,8 @@ public class SkyIslands implements ModInitializer {
 			WindSpears.clear();
 			PrismarineItems.clear();
 			PrismarineBows.clear();
+			ThrownPrismarineArrows.clear();
+			PrismarineDrowned.clear();
 			RainDrowned.clear();
 			com.skyislands.world.IslandColumns.clear();
 		});

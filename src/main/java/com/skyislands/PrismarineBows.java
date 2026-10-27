@@ -6,6 +6,7 @@ import java.util.ArrayList;
 import java.util.IdentityHashMap;
 import java.util.Iterator;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.UUID;
 import java.util.function.Predicate;
@@ -24,8 +25,12 @@ import net.minecraft.network.chat.Component;
 import net.minecraft.resources.Identifier;
 import net.minecraft.resources.ResourceKey;
 import net.minecraft.server.level.ServerLevel;
+import net.minecraft.server.level.ServerPlayer;
+import net.minecraft.world.InteractionHand;
+import net.minecraft.world.InteractionResult;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.LivingEntity;
+import net.minecraft.world.entity.Mob;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.item.ArrowItem;
 import net.minecraft.world.item.BowItem;
@@ -50,7 +55,11 @@ import net.minecraft.world.phys.Vec3;
  * tick: an arrow that has stopped in the ground is removed with prismarine block-break particles and the glass break sound.</li>
  * <li>It is drawn as the Prismarine Arrow item, spinning along its flight (like the Wind Spears), not as the plain arrow model:
  * the arrow entity is named {@link #HIDDEN_NAME}, which the client takes as "do not draw this one" (PrismarineArrowRenderMixin), and a
- * server-side item display follows it each tick (see {@link SpearVisual#spawnItem}).</li>
+ * server-side item display follows it each tick (see {@link SpearVisual#spawnItem}). The picture is made at the very start of
+ * the tick the arrow appears in ({@link #beforeTick}), so it is sent to the players together with the arrow and shows at once.</li>
+ * <li>It does not slow down in water, like a trident (see {@link #keepSpeedInWater}): vanilla arrows keep only 60% of their
+ * speed per tick under water, a Prismarine Arrow keeps 99%.</li>
+ * <li>Right click with it throws it (see {@link ThrownPrismarineArrows}): short range, no cooldown.</li>
  * </ul>
  *
  * <p><b>Bow</b>: a {@link BowItem} that only takes Prismarine Arrows, with
@@ -91,19 +100,30 @@ public final class PrismarineBows {
 	 */
 	public static final String HIDDEN_NAME = "sky_islands:prismarine_arrow";
 	/** How big the spinning arrow picture is (the arrow sprite is one block across; its arrow is about 1.2 blocks long at 1.0). */
-	private static final double VISUAL_SCALE = 0.7;
+	static final double VISUAL_SCALE = 0.7;
 	/**
 	 * Where the arrow sprite's tip points as an item display draws it: the sprite has its tip at the upper right, and an item
 	 * display draws an item mirrored left to right, so (-1, 1).
 	 */
-	private static final double TIP_X = -1.0;
-	private static final double TIP_Y = 1.0;
+	static final double TIP_X = -1.0;
+	static final double TIP_Y = 1.0;
+	/** The item the spinning picture shows. */
+	static final String VISUAL_ITEM = "sky_islands:prismarine_arrow";
+
+	/** A trident keeps 99% of its speed per tick under water (a vanilla arrow only 60%); a Prismarine Arrow does the same as a trident. */
+	private static final double WATER_INERTIA = 0.99;
+	/** What an arrow loses of its upward speed every tick (vanilla's arrow gravity). */
+	private static final double ARROW_GRAVITY = 0.05;
+	/** How fast an arrow a mob (a drowned) shoots leaves the bow, in blocks per tick (a skeleton's arrow is 1.6). */
+	private static final double MOB_ARROW_SPEED = 1.6;
 
 	public static Item PRISMARINE_ARROW;
 	public static Item PRISMARINE_BOW;
 
 	/** True while the Prismarine Bow is letting an arrow go (the arrow enters the world inside that call). */
 	private static boolean shootingFromBow = false;
+	/** True while a mob (a drowned with a Prismarine Bow) is shooting: the arrow is a Prismarine Arrow, but not doubled and not slowed. */
+	private static boolean shootingFromMob = false;
 	/** Used by the damage mixin: true while the doubled hit is being dealt, so it is not doubled again. */
 	public static boolean doubling = false;
 
@@ -113,6 +133,8 @@ public final class PrismarineBows {
 	private static final Map<Entity, Vec3> LAST_POSITION = new IdentityHashMap<>();
 	/** The spinning item picture that stands in for each arrow's plain model. */
 	private static final Map<Entity, UUID> VISUALS = new IdentityHashMap<>();
+	/** How fast each arrow was going when the tick began (what is needed to take the water's drag back off, see keepSpeedInWater). */
+	private static final Map<Entity, Vec3> PRE_VELOCITY = new IdentityHashMap<>();
 
 	private static final Predicate<ItemStack> PRISMARINE_ARROW_ONLY = stack -> PRISMARINE_ARROW != null && stack.is(PRISMARINE_ARROW);
 
@@ -132,7 +154,7 @@ public final class PrismarineBows {
 		Item.Properties arrowProperties = new Item.Properties().setId(ResourceKey.create(Registries.ITEM, arrowId));
 		arrowProperties.component(DataComponents.ITEM_MODEL, arrowId);
 		arrowProperties.component(DataComponents.ITEM_NAME, Component.translatable("item.sky_islands.prismarine_arrow"));
-		PRISMARINE_ARROW = Registry.register(BuiltInRegistries.ITEM, arrowId, new ArrowItem(arrowProperties));
+		PRISMARINE_ARROW = Registry.register(BuiltInRegistries.ITEM, arrowId, new PrismarineArrowItem(arrowProperties));
 
 		Identifier bowId = SkyIslands.id("prismarine_bow");
 		Item.Properties bowProperties = new Item.Properties().setId(ResourceKey.create(Registries.ITEM, bowId)).durability(BOW_DURABILITY).enchantable(1);
@@ -148,6 +170,8 @@ public final class PrismarineBows {
 		CreativeModeTabEvents.modifyOutputEvent(CreativeModeTabs.INGREDIENTS).register(output -> output.insertAfter(Items.ARROW, PRISMARINE_ARROW));
 
 		ServerEntityEvents.ENTITY_LOAD.register((entity, level) -> onEntityLoad(entity));
+		// the start of the tick comes before the players are sent what is new in the world, the end of it does not
+		ServerTickEvents.START_SERVER_TICK.register(server -> beforeTick());
 		ServerTickEvents.END_SERVER_TICK.register(server -> checkArrows());
 	}
 
@@ -155,7 +179,9 @@ public final class PrismarineBows {
 		IN_FLIGHT.clear();
 		LAST_POSITION.clear();
 		VISUALS.clear();
+		PRE_VELOCITY.clear();
 		shootingFromBow = false;
+		shootingFromMob = false;
 		doubling = false;
 	}
 
@@ -192,7 +218,7 @@ public final class PrismarineBows {
 			if (!carriesPrismarineArrow(entity)) {
 				// A creative player with no arrows gets a plain arrow from the game's own bow code, as with the vanilla bow.
 				// From the Prismarine Bow it is made into a Prismarine Arrow.
-				if (!shootingFromBow || !makePrismarine(entity)) {
+				if (!(shootingFromBow || shootingFromMob) || !makePrismarine(entity)) {
 					return;
 				}
 			}
@@ -202,8 +228,8 @@ public final class PrismarineBows {
 
 			if (shootingFromBow) {
 				entity.addTag(BOW_ARROW_TAG);
-			} else {
-				// a vanilla bow, a crossbow or a dispenser: a shorter flight
+			} else if (!shootingFromMob) {
+				// a vanilla bow, a crossbow or a dispenser: a shorter flight (a mob's arrow is already shot at the speed it should have)
 				entity.setDeltaMovement(entity.getDeltaMovement().scale(ARROW_RANGE_FACTOR));
 				markForSync(entity);
 			}
@@ -230,6 +256,7 @@ public final class PrismarineBows {
 
 				VISUALS.remove(arrow);
 				LAST_POSITION.remove(arrow);
+				PRE_VELOCITY.remove(arrow);
 				it.remove();
 				continue;
 			}
@@ -242,11 +269,80 @@ public final class PrismarineBows {
 				shatter(level, arrow);
 				removeVisual(level, arrow);
 				LAST_POSITION.remove(arrow);
+				PRE_VELOCITY.remove(arrow);
 				it.remove();
 			} else {
-				showVisual(level, arrow);
+				keepSpeedInWater(level, arrow);
+
+				if (VISUALS.containsKey(arrow)) {
+					showVisual(level, arrow);
+				} else {
+					// an arrow made during this tick (a dispenser's, a mob's): its picture starts at the arrow, as in beforeTick
+					startVisual(level, arrow);
+				}
 			}
 		}
+	}
+
+	/**
+	 * The start of every tick. An arrow that has no picture yet gets one right where it is: the players are sent what is new in
+	 * the world while the tick runs, so a picture made now arrives together with the arrow (made at the end of the tick, as it
+	 * used to be, it came a whole tick later and showed up several blocks ahead of the bow). Also remembers how fast each arrow
+	 * is going, which {@link #keepSpeedInWater} needs once the tick is over.
+	 */
+	private static void beforeTick() {
+		if (IN_FLIGHT.isEmpty()) {
+			return;
+		}
+
+		for (Entity arrow : IN_FLIGHT) {
+			if (arrow.isRemoved() || !(arrow.level() instanceof ServerLevel level)) {
+				continue;
+			}
+
+			PRE_VELOCITY.put(arrow, arrow.getDeltaMovement());
+
+			if (!VISUALS.containsKey(arrow)) {
+				startVisual(level, arrow);
+			}
+		}
+	}
+
+	/** Makes the arrow's spinning picture at the arrow itself, pointing the way it is going. */
+	private static void startVisual(ServerLevel level, Entity arrow) {
+		Vec3 velocity = arrow.getDeltaMovement();
+		double length = velocity.length();
+
+		if (length < 1.0E-4) {
+			return;
+		}
+
+		VISUALS.put(arrow, SpearVisual.spawnItem(level, VISUAL_ITEM, VISUAL_SCALE, TIP_X, TIP_Y,
+				arrow.getX(), arrow.getY(), arrow.getZ(), velocity.x / length, velocity.y / length, velocity.z / length));
+	}
+
+	/**
+	 * A Prismarine Arrow ignores the water's resistance, like a trident. The vanilla arrow entity multiplies its speed by 0.6
+	 * every tick it is in water, and its drag cannot be changed from here, so after the tick the speed it had at the start is
+	 * put back, slowed by a trident's 0.99 instead and with the arrow's gravity taken off. (Skipped if the arrow hit something
+	 * and bounced off, or has stopped in a block: then its speed no longer points the way it was going.) The speed is not sent to
+	 * the players: the arrow is only drawn from the server's picture of it, which follows this speed.
+	 */
+	private static void keepSpeedInWater(ServerLevel level, Entity arrow) {
+		if (!arrow.isInWater()) {
+			return;
+		}
+
+		level.sendParticles(ParticleTypes.BUBBLE, arrow.getX(), arrow.getY(), arrow.getZ(), 2, 0.05, 0.05, 0.05, 0.01);
+
+		Vec3 before = PRE_VELOCITY.get(arrow);
+		Vec3 now = arrow.getDeltaMovement();
+
+		if (before == null || before.lengthSqr() < 1.0E-6 || now.dot(before) <= 0.0) {
+			return;
+		}
+
+		arrow.setDeltaMovement(before.x * WATER_INERTIA, before.y * WATER_INERTIA - ARROW_GRAVITY, before.z * WATER_INERTIA);
 	}
 
 	/**
@@ -268,7 +364,7 @@ public final class PrismarineBows {
 		UUID id = VISUALS.get(arrow);
 
 		if (id == null) {
-			VISUALS.put(arrow, SpearVisual.spawnItem(level, "sky_islands:prismarine_arrow", VISUAL_SCALE, TIP_X, TIP_Y, ahead.x, ahead.y, ahead.z, dx, dy, dz));
+			VISUALS.put(arrow, SpearVisual.spawnItem(level, VISUAL_ITEM, VISUAL_SCALE, TIP_X, TIP_Y, ahead.x, ahead.y, ahead.z, dx, dy, dz));
 		} else {
 			SpearVisual.moveItem(level, id, ahead.x, ahead.y, ahead.z, dx, dy, dz, arrow.tickCount, TIP_X, TIP_Y);
 		}
@@ -297,13 +393,60 @@ public final class PrismarineBows {
 
 	/** The arrow breaks: prismarine block-break particles and the glass break sound. */
 	private static void shatter(ServerLevel level, Entity arrow) {
-		double x = arrow.getX();
-		double y = arrow.getY();
-		double z = arrow.getZ();
-		level.sendParticles(new BlockParticleOption(ParticleTypes.BLOCK, Blocks.PRISMARINE.defaultBlockState()), x, y, z, 28, 0.12, 0.12, 0.12, 0.08);
-		ArenaBoss.command(level, ArenaBoss.quietSource(level), String.format(java.util.Locale.ROOT,
-				"playsound minecraft:block.glass.break block @a %.1f %.1f %.1f 0.6 1.6", x, y, z));
+		shatterAt(level, arrow.getX(), arrow.getY(), arrow.getZ());
 		arrow.discard();
+	}
+
+	/** The break effect alone (a thrown Prismarine Arrow, see {@link ThrownPrismarineArrows}, has no arrow entity to discard). */
+	static void shatterAt(ServerLevel level, double x, double y, double z) {
+		level.sendParticles(new BlockParticleOption(ParticleTypes.BLOCK, Blocks.PRISMARINE.defaultBlockState()), x, y, z, 28, 0.12, 0.12, 0.12, 0.08);
+		ArenaBoss.command(level, ArenaBoss.quietSource(level), String.format(Locale.ROOT,
+				"playsound minecraft:block.glass.break block @a %.1f %.1f %.1f 0.6 1.6", x, y, z));
+	}
+
+	/**
+	 * A mob (a drowned holding a Prismarine Bow) shoots a Prismarine Arrow at a target: aimed like a skeleton's (a little high,
+	 * to make up for the fall, a little off on the lower difficulties). It is the same arrow as any other Prismarine Arrow (it
+	 * shatters, is drawn as the spinning item, ignores the water), but it is not doubled and not slowed, and cannot be picked up.
+	 */
+	static void shootFromMob(ServerLevel level, Mob mob, LivingEntity target) {
+		double sx = mob.getX();
+		double sy = mob.getEyeY() - 0.1;
+		double sz = mob.getZ();
+		double dx = target.getX() - sx;
+		double dy = target.getY() + target.getBbHeight() * 0.35 - sy;
+		double dz = target.getZ() - sz;
+		dy += Math.sqrt(dx * dx + dz * dz) * 0.2;
+
+		double length = Math.sqrt(dx * dx + dy * dy + dz * dz);
+
+		if (length < 1.0E-6) {
+			return;
+		}
+
+		// a skeleton's spread: 14 - 4 x difficulty (10 on Easy, 6 on Normal, 2 on Hard)
+		double spread = 0.0075 * Math.max(2, 14 - 4 * level.getDifficulty().ordinal());
+		double ux = dx / length + level.getRandom().nextGaussian() * spread;
+		double uy = dy / length + level.getRandom().nextGaussian() * spread;
+		double uz = dz / length + level.getRandom().nextGaussian() * spread;
+		double norm = Math.sqrt(ux * ux + uy * uy + uz * uz);
+		ux /= norm;
+		uy /= norm;
+		uz /= norm;
+
+		shootingFromMob = true;
+
+		try {
+			ArenaBoss.command(level, ArenaBoss.quietSource(level), String.format(Locale.ROOT,
+					"summon minecraft:arrow %.2f %.2f %.2f {Motion:[%.3f,%.3f,%.3f],Owner:%s,pickup:0b}",
+					sx + ux * 0.6, sy + uy * 0.6, sz + uz * 0.6, ux * MOB_ARROW_SPEED, uy * MOB_ARROW_SPEED, uz * MOB_ARROW_SPEED,
+					ArenaBoss.uuidNbt(mob.getUUID())));
+		} finally {
+			shootingFromMob = false;
+		}
+
+		ArenaBoss.command(level, ArenaBoss.quietSource(level), String.format(Locale.ROOT,
+				"playsound minecraft:entity.arrow.shoot hostile @a %.1f %.1f %.1f 1.0 %.2f", sx, sy, sz, 0.9 + level.getRandom().nextDouble() * 0.3));
 	}
 
 	/** Turns the plain arrow a creative player's bow produced into a Prismarine Arrow (swaps the stack it gives back when picked up). */
@@ -429,6 +572,29 @@ public final class PrismarineBows {
 			} catch (IllegalAccessException | RuntimeException e) {
 				// the arrow just corrects itself a moment later
 			}
+		}
+	}
+
+	// ------------------------------------------------------------------ the arrow item
+
+	/** The arrow item: it is still an ordinary arrow for the bows, and right click throws it by hand (see {@link ThrownPrismarineArrows}). */
+	static final class PrismarineArrowItem extends ArrowItem {
+		PrismarineArrowItem(Item.Properties properties) {
+			super(properties);
+		}
+
+		@Override
+		public InteractionResult use(Level level, Player player, InteractionHand hand) {
+			if (player.isSpectator()) {
+				return InteractionResult.PASS;
+			}
+
+			if (level instanceof ServerLevel serverLevel && player instanceof ServerPlayer serverPlayer) {
+				ThrownPrismarineArrows.throwArrow(serverLevel, serverPlayer, player.getItemInHand(hand));
+			}
+
+			// no cooldown on purpose: the player can throw one every time they click
+			return InteractionResult.SUCCESS;
 		}
 	}
 
