@@ -59,10 +59,11 @@ final class SpearVisual {
 
 	/**
 	 * Shows a real item (for example "sky_islands:prismarine_arrow") as a flying, spinning picture, the same way as a spear. The
-	 * item's flat sprite must have its tip at the upper right (as the arrow's does), because {@link #rotation} turns that
-	 * corner to the direction of flight.
+	 * (tipX, tipY) is where the tip of the item's flat sprite points as it is drawn here ({@link #rotation} turns that direction
+	 * to the direction of flight). An item display draws an item mirrored left to right, so a sprite with its tip at the upper
+	 * right is (-1, 1) here.
 	 */
-	static UUID spawnItem(ServerLevel level, String itemId, double scale, double x, double y, double z, double dx, double dy, double dz) {
+	static UUID spawnItem(ServerLevel level, String itemId, double scale, double tipX, double tipY, double x, double y, double z, double dx, double dy, double dz) {
 		UUID id = UUID.randomUUID();
 		LIVE.add(id);
 
@@ -71,12 +72,17 @@ final class SpearVisual {
 						+ "item:{id:\"%s\",count:1},"
 						+ "item_display:\"none\",teleport_duration:1,start_interpolation:0,interpolation_duration:1,"
 						+ "transformation:{translation:[0f,0f,0f],left_rotation:%s,scale:[%.2ff,%.2ff,%.2ff],right_rotation:[0f,0f,0f,1f]}}",
-				x, y, z, ArenaBoss.uuidNbt(id), TAG, itemId, rotation(dx, dy, dz, 0), scale, scale, scale));
+				x, y, z, ArenaBoss.uuidNbt(id), TAG, itemId, rotation(dx, dy, dz, 0, tipX, tipY), scale, scale, scale));
 		return id;
 	}
 
 	/** Moves the picture and turns it to the current direction of flight; {@code age} is how many ticks it has been flying (for the spin). */
 	static void move(ServerLevel level, UUID id, double x, double y, double z, double dx, double dy, double dz, int age) {
+		moveItem(level, id, x, y, z, dx, dy, dz, age, 1.0, 1.0);
+	}
+
+	/** {@link #move} for a picture whose sprite tip points along (tipX, tipY) (see {@link #spawnItem}). */
+	static void moveItem(ServerLevel level, UUID id, double x, double y, double z, double dx, double dy, double dz, int age, double tipX, double tipY) {
 		double length = Math.sqrt(dx * dx + dy * dy + dz * dz);
 
 		if (length < 1.0E-6) {
@@ -86,7 +92,7 @@ final class SpearVisual {
 		ArenaBoss.command(level, ArenaBoss.quietSource(level), String.format(Locale.ROOT, "tp %s %.3f %.3f %.3f", id, x, y, z));
 		ArenaBoss.command(level, ArenaBoss.quietSource(level), String.format(Locale.ROOT,
 				"data merge entity %s {start_interpolation:0,interpolation_duration:1,transformation:{left_rotation:%s}}",
-				id, rotation(dx / length, dy / length, dz / length, age)));
+				id, rotation(dx / length, dy / length, dz / length, age, tipX, tipY)));
 	}
 
 	/**
@@ -132,9 +138,14 @@ final class SpearVisual {
 	 * direction of flight d (a unit vector), then spins it about d.
 	 */
 	static String rotation(double dx, double dy, double dz, int age) {
-		double s = Math.sqrt(0.5);
-		double ux = s;
-		double uy = s;
+		return rotation(dx, dy, dz, age, 1.0, 1.0);
+	}
+
+	/** {@link #rotation(double, double, double, int)} for a sprite whose tip points along (tipX, tipY, 0) instead of (1, 1, 0). */
+	static String rotation(double dx, double dy, double dz, int age, double tipX, double tipY) {
+		double tipLength = Math.sqrt(tipX * tipX + tipY * tipY);
+		double ux = tipX / tipLength;
+		double uy = tipY / tipLength;
 		double uz = 0.0;
 
 		// Shortest turn from u to d: axis u x d, angle between them.

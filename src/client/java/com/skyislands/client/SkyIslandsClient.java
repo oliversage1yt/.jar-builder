@@ -20,6 +20,7 @@ public class SkyIslandsClient implements ClientModInitializer {
 			CloudSpawner.tick(client);
 			RainAboveClouds.tick(client);
 			WindBlockInput.tick(client);
+			PrismarineArrowHider.tick(client);
 		});
 
 		SkyIslands.LOGGER.info("Sky Islands client features ready (music fades, clouds, orange grass, golden foliage).");

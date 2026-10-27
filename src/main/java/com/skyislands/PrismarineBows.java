@@ -47,7 +47,7 @@ import net.minecraft.world.phys.Vec3;
  * <li>Shot from anything but the Prismarine Bow, it leaves at {@link #ARROW_RANGE_FACTOR} of the normal speed, so it does
  * not carry as far (and hits a little softer). Done when the arrow enters the world.</li>
  * <li>It shatters when it lands in a block (it never stays stuck, and can never be picked up again). It is checked once a
- * tick: an arrow that has stopped in the ground is removed with prismarine block-break particles and the stone break sound.</li>
+ * tick: an arrow that has stopped in the ground is removed with prismarine block-break particles and the glass break sound.</li>
  * <li>It is drawn as the Prismarine Arrow item, spinning along its flight (like the Wind Spears), not as the plain arrow model:
  * the arrow entity is named {@link #HIDDEN_NAME}, which the client takes as "do not draw this one" (PrismarineArrowRenderMixin), and a
  * server-side item display follows it each tick (see {@link SpearVisual#spawnItem}).</li>
@@ -58,7 +58,7 @@ import net.minecraft.world.phys.Vec3;
  * <li>twice the damage ({@link #BOW_DAMAGE_MULTIPLIER}): every arrow it shoots is marked, and
  * {@code PrismarineBowDamageMixin} doubles the damage such an arrow deals (Power, Impaling and a critical hit included);</li>
  * <li>half the durability of a vanilla bow ({@link #BOW_DURABILITY} instead of 384): the same thing as breaking twice as fast;</li>
- * <li>a draw that takes {@link #DRAW_TIME_MULTIPLIER} times as long (40 ticks to full power instead of 20), see
+ * <li>a draw that takes {@link #DRAW_TIME_MULTIPLIER} times as long (26 ticks to full power instead of 20), see
  * {@link PrismarineBowItem#releaseUsing} (and the pull textures in items/prismarine_bow.json, which use half the vanilla scale);</li>
  * <li>In creative mode it fires a Prismarine Arrow even with none in the inventory, as the vanilla bow does with plain arrows.</li>
  * <li>Impaling as an extra Power level: Impaling is allowed on the bow through the tag
@@ -77,8 +77,8 @@ public final class PrismarineBows {
 	public static final float BOW_DAMAGE_MULTIPLIER = 2.0F;
 	/** The vanilla bow has 384 uses; half as many is the same as wearing out twice as fast, whatever Unbreaking does. */
 	private static final int BOW_DURABILITY = 192;
-	/** The Prismarine Bow takes this many times as long to draw (20 ticks to full power in vanilla, so 40 here). */
-	private static final int DRAW_TIME_MULTIPLIER = 2;
+	/** The Prismarine Bow takes this many times as long to draw (20 ticks to full power in vanilla, so 26 here). */
+	private static final double DRAW_TIME_MULTIPLIER = 1.3;
 
 	/** Scoreboard tag on every Prismarine Arrow entity (saved with the arrow, so it survives a reload). */
 	static final String ARROW_TAG = "sky_islands_prismarine_arrow";
@@ -92,6 +92,12 @@ public final class PrismarineBows {
 	public static final String HIDDEN_NAME = "sky_islands:prismarine_arrow";
 	/** How big the spinning arrow picture is (the arrow sprite is one block across; its arrow is about 1.2 blocks long at 1.0). */
 	private static final double VISUAL_SCALE = 0.7;
+	/**
+	 * Where the arrow sprite's tip points as an item display draws it: the sprite has its tip at the upper right, and an item
+	 * display draws an item mirrored left to right, so (-1, 1).
+	 */
+	private static final double TIP_X = -1.0;
+	private static final double TIP_Y = 1.0;
 
 	public static Item PRISMARINE_ARROW;
 	public static Item PRISMARINE_BOW;
@@ -262,9 +268,9 @@ public final class PrismarineBows {
 		UUID id = VISUALS.get(arrow);
 
 		if (id == null) {
-			VISUALS.put(arrow, SpearVisual.spawnItem(level, "sky_islands:prismarine_arrow", VISUAL_SCALE, ahead.x, ahead.y, ahead.z, dx, dy, dz));
+			VISUALS.put(arrow, SpearVisual.spawnItem(level, "sky_islands:prismarine_arrow", VISUAL_SCALE, TIP_X, TIP_Y, ahead.x, ahead.y, ahead.z, dx, dy, dz));
 		} else {
-			SpearVisual.move(level, id, ahead.x, ahead.y, ahead.z, dx, dy, dz, arrow.tickCount);
+			SpearVisual.moveItem(level, id, ahead.x, ahead.y, ahead.z, dx, dy, dz, arrow.tickCount, TIP_X, TIP_Y);
 		}
 	}
 
@@ -289,14 +295,14 @@ public final class PrismarineBows {
 		return before != null && arrow.tickCount > 2 && before.distanceToSqr(now) < 1.0E-8;
 	}
 
-	/** The arrow breaks like a block of prismarine: its break particles and the stone break sound. */
+	/** The arrow breaks: prismarine block-break particles and the glass break sound. */
 	private static void shatter(ServerLevel level, Entity arrow) {
 		double x = arrow.getX();
 		double y = arrow.getY();
 		double z = arrow.getZ();
-		level.sendParticles(new BlockParticleOption(ParticleTypes.BLOCK, Blocks.PRISMARINE.defaultBlockState()), x, y, z, 14, 0.12, 0.12, 0.12, 0.08);
+		level.sendParticles(new BlockParticleOption(ParticleTypes.BLOCK, Blocks.PRISMARINE.defaultBlockState()), x, y, z, 28, 0.12, 0.12, 0.12, 0.08);
 		ArenaBoss.command(level, ArenaBoss.quietSource(level), String.format(java.util.Locale.ROOT,
-				"playsound minecraft:block.stone.break block @a %.1f %.1f %.1f 0.7 1.3", x, y, z));
+				"playsound minecraft:block.glass.break block @a %.1f %.1f %.1f 0.6 1.6", x, y, z));
 		arrow.discard();
 	}
 
@@ -443,7 +449,7 @@ public final class PrismarineBows {
 		@Override
 		public boolean releaseUsing(ItemStack stack, Level level, LivingEntity user, int timeLeft) {
 			int full = getUseDuration(stack, user);
-			int drawn = (full - timeLeft) / DRAW_TIME_MULTIPLIER;
+			int drawn = (int) Math.floor((full - timeLeft) / DRAW_TIME_MULTIPLIER + 1.0E-6);
 			shootingFromBow = true;
 
 			try {
