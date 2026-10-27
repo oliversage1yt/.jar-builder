@@ -57,6 +57,24 @@ final class SpearVisual {
 		return id;
 	}
 
+	/**
+	 * Shows a real item (for example "sky_islands:prismarine_arrow") as a flying, spinning picture, the same way as a spear. The
+	 * item's flat sprite must have its tip at the upper right (as the arrow's does), because {@link #rotation} turns that
+	 * corner to the direction of flight.
+	 */
+	static UUID spawnItem(ServerLevel level, String itemId, double scale, double x, double y, double z, double dx, double dy, double dz) {
+		UUID id = UUID.randomUUID();
+		LIVE.add(id);
+
+		ArenaBoss.command(level, ArenaBoss.quietSource(level), String.format(Locale.ROOT,
+				"summon minecraft:item_display %.2f %.2f %.2f {UUID:%s,Tags:[\"%s\"],Rotation:[0f,0f],"
+						+ "item:{id:\"%s\",count:1},"
+						+ "item_display:\"none\",teleport_duration:1,start_interpolation:0,interpolation_duration:1,"
+						+ "transformation:{translation:[0f,0f,0f],left_rotation:%s,scale:[%.2ff,%.2ff,%.2ff],right_rotation:[0f,0f,0f,1f]}}",
+				x, y, z, ArenaBoss.uuidNbt(id), TAG, itemId, rotation(dx, dy, dz, 0), scale, scale, scale));
+		return id;
+	}
+
 	/** Moves the picture and turns it to the current direction of flight; {@code age} is how many ticks it has been flying (for the spin). */
 	static void move(ServerLevel level, UUID id, double x, double y, double z, double dx, double dy, double dz, int age) {
 		double length = Math.sqrt(dx * dx + dy * dy + dz * dz);

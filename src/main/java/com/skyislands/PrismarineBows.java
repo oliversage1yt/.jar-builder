@@ -7,6 +7,7 @@ import java.util.IdentityHashMap;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
+import java.util.UUID;
 import java.util.function.Predicate;
 
 import net.fabricmc.fabric.api.creativetab.v1.CreativeModeTabEvents;
@@ -15,6 +16,7 @@ import net.fabricmc.fabric.api.event.lifecycle.v1.ServerTickEvents;
 
 import net.minecraft.core.Registry;
 import net.minecraft.core.component.DataComponents;
+import net.minecraft.core.particles.BlockParticleOption;
 import net.minecraft.core.particles.ParticleTypes;
 import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.core.registries.Registries;
@@ -32,6 +34,7 @@ import net.minecraft.world.item.Item;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.Items;
 import net.minecraft.world.level.Level;
+import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.phys.Vec3;
 
 /**
@@ -44,7 +47,10 @@ import net.minecraft.world.phys.Vec3;
  * <li>Shot from anything but the Prismarine Bow, it leaves at {@link #ARROW_RANGE_FACTOR} of the normal speed, so it does
  * not carry as far (and hits a little softer). Done when the arrow enters the world.</li>
  * <li>It shatters when it lands in a block (it never stays stuck, and can never be picked up again). It is checked once a
- * tick: an arrow that has stopped in the ground is removed with a puff and a glass sound.</li>
+ * tick: an arrow that has stopped in the ground is removed with prismarine block-break particles and the stone break sound.</li>
+ * <li>It is drawn as the Prismarine Arrow item, spinning along its flight (like the Wind Spears), not as the plain arrow model:
+ * the arrow entity is named {@link #HIDDEN_NAME}, which the client takes as "do not draw this one" (PrismarineArrowRenderMixin), and a
+ * server-side item display follows it each tick (see {@link SpearVisual#spawnItem}).</li>
  * </ul>
  *
  * <p><b>Bow</b>: a {@link BowItem} that only takes Prismarine Arrows, with
@@ -54,6 +60,7 @@ import net.minecraft.world.phys.Vec3;
  * <li>half the durability of a vanilla bow ({@link #BOW_DURABILITY} instead of 384): the same thing as breaking twice as fast;</li>
  * <li>a draw that takes {@link #DRAW_TIME_MULTIPLIER} times as long (40 ticks to full power instead of 20), see
  * {@link PrismarineBowItem#releaseUsing} (and the pull textures in items/prismarine_bow.json, which use half the vanilla scale);</li>
+ * <li>In creative mode it fires a Prismarine Arrow even with none in the inventory, as the vanilla bow does with plain arrows.</li>
  * <li>Impaling as an extra Power level: Impaling is allowed on the bow through the tag
  * data/sky_islands/tags/item/enchantable/impaling.json, and data/minecraft/enchantment/impaling.json gives it
  * +0.5 arrow damage per level (what one level of Power is worth) on a bow. The other bow enchantments (Power, Punch, Flame,
@@ -78,6 +85,14 @@ public final class PrismarineBows {
 	/** Scoreboard tag on an arrow that was shot from the Prismarine Bow (its damage is doubled). */
 	static final String BOW_ARROW_TAG = "sky_islands_prismarine_bow_arrow";
 
+	/**
+	 * The name every Prismarine Arrow entity carries. The name is sent to the players, which is how the client knows to leave
+	 * the plain arrow model undrawn (the arrow is shown as a spinning item picture instead, see {@link SpearVisual}).
+	 */
+	public static final String HIDDEN_NAME = "sky_islands:prismarine_arrow";
+	/** How big the spinning arrow picture is (the arrow sprite is one block across; its arrow is about 1.2 blocks long at 1.0). */
+	private static final double VISUAL_SCALE = 0.7;
+
 	public static Item PRISMARINE_ARROW;
 	public static Item PRISMARINE_BOW;
 
@@ -90,6 +105,8 @@ public final class PrismarineBows {
 	private static final List<Entity> IN_FLIGHT = new ArrayList<>();
 	/** Where each of them was a tick ago (only used when the arrow's "in ground" flag cannot be read). */
 	private static final Map<Entity, Vec3> LAST_POSITION = new IdentityHashMap<>();
+	/** The spinning item picture that stands in for each arrow's plain model. */
+	private static final Map<Entity, UUID> VISUALS = new IdentityHashMap<>();
 
 	private static final Predicate<ItemStack> PRISMARINE_ARROW_ONLY = stack -> PRISMARINE_ARROW != null && stack.is(PRISMARINE_ARROW);
 
@@ -131,6 +148,7 @@ public final class PrismarineBows {
 	public static void clear() {
 		IN_FLIGHT.clear();
 		LAST_POSITION.clear();
+		VISUALS.clear();
 		shootingFromBow = false;
 		doubling = false;
 	}
@@ -138,6 +156,16 @@ public final class PrismarineBows {
 	/** True for an arrow that the Prismarine Bow shot (the damage mixin asks this of the entity that did the hitting). */
 	public static boolean firedFromPrismarineBow(Entity entity) {
 		return entity != null && ArenaBoss.tagsOf(entity).contains(BOW_ARROW_TAG);
+	}
+
+	/** True for the entity whose plain arrow model must not be drawn (asked by the client, see PrismarineArrowRenderMixin). */
+	public static boolean isHiddenArrow(Entity entity) {
+		if (entity == null || !entity.hasCustomName()) {
+			return false;
+		}
+
+		var name = entity.getCustomName();
+		return name != null && HIDDEN_NAME.equals(name.getString());
 	}
 
 	// ------------------------------------------------------------------ the arrow entity
@@ -156,10 +184,15 @@ public final class PrismarineBows {
 		if (!ArenaBoss.tagsOf(entity).contains(ARROW_TAG)) {
 			// the first time this arrow is seen: is it a Prismarine Arrow?
 			if (!carriesPrismarineArrow(entity)) {
-				return;
+				// A creative player with no arrows gets a plain arrow from the game's own bow code, as with the vanilla bow.
+				// From the Prismarine Bow it is made into a Prismarine Arrow.
+				if (!shootingFromBow || !makePrismarine(entity)) {
+					return;
+				}
 			}
 
 			entity.addTag(ARROW_TAG);
+			entity.setCustomName(Component.literal(HIDDEN_NAME));
 
 			if (shootingFromBow) {
 				entity.addTag(BOW_ARROW_TAG);
@@ -175,7 +208,7 @@ public final class PrismarineBows {
 		}
 	}
 
-	/** Every tick: a Prismarine Arrow that has stopped in a block breaks. */
+	/** Every tick: a Prismarine Arrow that has stopped in a block breaks, and the spinning picture of each flying one follows it. */
 	private static void checkArrows() {
 		if (IN_FLIGHT.isEmpty()) {
 			return;
@@ -185,6 +218,11 @@ public final class PrismarineBows {
 			Entity arrow = it.next();
 
 			if (arrow.isRemoved()) {
+				if (arrow.level() instanceof ServerLevel level) {
+					removeVisual(level, arrow);
+				}
+
+				VISUALS.remove(arrow);
 				LAST_POSITION.remove(arrow);
 				it.remove();
 				continue;
@@ -196,9 +234,45 @@ public final class PrismarineBows {
 
 			if (hasStopped(arrow)) {
 				shatter(level, arrow);
+				removeVisual(level, arrow);
 				LAST_POSITION.remove(arrow);
 				it.remove();
+			} else {
+				showVisual(level, arrow);
 			}
+		}
+	}
+
+	/**
+	 * Puts the spinning arrow picture where the arrow will be a tick from now: the picture glides there over that tick, so it
+	 * arrives together with the real (undrawn) arrow instead of a tick behind it.
+	 */
+	private static void showVisual(ServerLevel level, Entity arrow) {
+		Vec3 velocity = arrow.getDeltaMovement();
+		double length = velocity.length();
+
+		if (length < 1.0E-4) {
+			return;
+		}
+
+		double dx = velocity.x / length;
+		double dy = velocity.y / length;
+		double dz = velocity.z / length;
+		Vec3 ahead = arrow.position().add(velocity);
+		UUID id = VISUALS.get(arrow);
+
+		if (id == null) {
+			VISUALS.put(arrow, SpearVisual.spawnItem(level, "sky_islands:prismarine_arrow", VISUAL_SCALE, ahead.x, ahead.y, ahead.z, dx, dy, dz));
+		} else {
+			SpearVisual.move(level, id, ahead.x, ahead.y, ahead.z, dx, dy, dz, arrow.tickCount);
+		}
+	}
+
+	private static void removeVisual(ServerLevel level, Entity arrow) {
+		UUID id = VISUALS.remove(arrow);
+
+		if (id != null) {
+			SpearVisual.remove(level, id);
 		}
 	}
 
@@ -215,19 +289,40 @@ public final class PrismarineBows {
 		return before != null && arrow.tickCount > 2 && before.distanceToSqr(now) < 1.0E-8;
 	}
 
+	/** The arrow breaks like a block of prismarine: its break particles and the stone break sound. */
 	private static void shatter(ServerLevel level, Entity arrow) {
 		double x = arrow.getX();
 		double y = arrow.getY();
 		double z = arrow.getZ();
-		level.sendParticles(ParticleTypes.CLOUD, x, y, z, 6, 0.1, 0.1, 0.1, 0.02);
+		level.sendParticles(new BlockParticleOption(ParticleTypes.BLOCK, Blocks.PRISMARINE.defaultBlockState()), x, y, z, 14, 0.12, 0.12, 0.12, 0.08);
 		ArenaBoss.command(level, ArenaBoss.quietSource(level), String.format(java.util.Locale.ROOT,
-				"playsound minecraft:block.glass.break block @a %.1f %.1f %.1f 0.6 1.6", x, y, z));
+				"playsound minecraft:block.stone.break block @a %.1f %.1f %.1f 0.7 1.3", x, y, z));
 		arrow.discard();
+	}
+
+	/** Turns the plain arrow a creative player's bow produced into a Prismarine Arrow (swaps the stack it gives back when picked up). */
+	private static boolean makePrismarine(Entity arrow) {
+		if (!carriesArrowStack(arrow)) {
+			return false;
+		}
+
+		for (Field field : stackFields) {
+			try {
+				if (field.get(arrow) instanceof ItemStack stack && stack.is(Items.ARROW)) {
+					field.set(arrow, new ItemStack(PRISMARINE_ARROW));
+					return true;
+				}
+			} catch (IllegalAccessException | RuntimeException e) {
+				// try the next field
+			}
+		}
+
+		return false;
 	}
 
 	// ------------------------------------------------------------------ reflection helpers (field types, not names)
 
-	private static boolean carriesPrismarineArrow(Entity arrow) {
+	private static boolean carriesArrowStack(Entity arrow) {
 		if (stackFields == null) {
 			List<Field> found = new ArrayList<>();
 
@@ -245,6 +340,14 @@ public final class PrismarineBows {
 			}
 
 			stackFields = found;
+		}
+
+		return !stackFields.isEmpty();
+	}
+
+	private static boolean carriesPrismarineArrow(Entity arrow) {
+		if (!carriesArrowStack(arrow)) {
+			return false;
 		}
 
 		for (Field field : stackFields) {
@@ -334,15 +437,11 @@ public final class PrismarineBows {
 		/**
 		 * The vanilla bow works the draw out as (use duration - time left). Telling it the time left was shorter than it
 		 * really was, by half of the time drawn, makes everything it does (the power, the full-power critical hit) take
-		 * {@link #DRAW_TIME_MULTIPLIER} times as long. While it runs, the arrow that comes out is marked as the bow's.
+		 * {@link #DRAW_TIME_MULTIPLIER} times as long. While it runs, the arrow that comes out is marked as the bow's (and, for a
+		 * creative player with no Prismarine Arrow, which the game answers with a plain arrow, made into a Prismarine Arrow).
 		 */
 		@Override
 		public boolean releaseUsing(ItemStack stack, Level level, LivingEntity user, int timeLeft) {
-			// a creative player with no Prismarine Arrow would get a plain arrow from the game: not from this bow
-			if (user instanceof Player player && !player.getProjectile(stack).is(PRISMARINE_ARROW)) {
-				return false;
-			}
-
 			int full = getUseDuration(stack, user);
 			int drawn = (full - timeLeft) / DRAW_TIME_MULTIPLIER;
 			shootingFromBow = true;

@@ -6,7 +6,8 @@
 		"RainLevelMixin",
 		"LivingEntityRendererBlockPoseMixin",
 		"HumanoidModelBlockPoseMixin",
-		"LivingEntityRendererCloneMixin"
+		"LivingEntityRendererCloneMixin",
+		"PrismarineArrowRenderMixin"
 	],
 	"injectors": {
 		"defaultRequire": 0
