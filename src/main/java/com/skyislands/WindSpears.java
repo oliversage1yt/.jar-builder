@@ -130,8 +130,11 @@ public final class WindSpears {
 	private static final int BURST_COOLDOWN_TICKS = 40;
 	/** A Riptide + Wind Burst spear launches its holder this many times before they have to land (a double jump). */
 	private static final int MAX_POKE_BURSTS = 2;
-	/** The wait between two poke launches (half a second). */
-	private static final int POKE_BURST_COOLDOWN_TICKS = 10;
+	/**
+	 * The wait between two poke launches (1 second). It is long enough for a Lunge jab to fit in between, so a double jump can
+	 * be chained as Wind Burst, Lunge, Wind Burst: presses of attack during this wait are plain vanilla jabs.
+	 */
+	private static final int POKE_BURST_COOLDOWN_TICKS = 20;
 
 	/** Arrows keep 60% of their speed per tick in water; a Wind Spear does the same. */
 	private static final double WATER_DRAG = 0.6;
@@ -158,7 +161,7 @@ public final class WindSpears {
 	private static final Map<UUID, Integer> BURST_USES = new HashMap<>();
 	/** The tick of a player's last poke launch (so the launch tick itself, still on the ground, does not count as a landing). */
 	private static final Map<UUID, Integer> BURST_LAST = new HashMap<>();
-	/** The next tick a player's poke may launch again: short, so the two launches of a double jump can follow each other. */
+	/** The next tick a player's poke may launch again: until then attack only jabs (so a Lunge can come between the two launches of a double jump). */
 	private static final Map<UUID, Integer> NEXT_POKE = new HashMap<>();
 	/** Players who were blocking last tick, to see the moment a block starts. */
 	private static final Set<UUID> WAS_BLOCKING = new HashSet<>();
