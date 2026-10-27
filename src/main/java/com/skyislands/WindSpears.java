@@ -167,6 +167,11 @@ public final class WindSpears {
 	/** A spear thrown by a mob (a copy) disappears this many ticks after it sticks. */
 	private static final int MOB_STUCK_TICKS = 100;
 	private static final double MOB_THROW_SPEED = 1.8;
+	/** After hitting an entity a spear keeps this part of its speed, turned round (a trident keeps -0.01 sideways and -0.1 up and down). */
+	private static final double BOUNCE_SIDEWAYS = -0.1;
+	private static final double BOUNCE_VERTICAL = -0.1;
+	/** A spear that has bounced off falls faster than one in flight. */
+	private static final double SPENT_GRAVITY = 0.06;
 
 	private static final Set<String> REGISTERED = new HashSet<>();
 	/** Each wind spear item -> the vanilla spear it starts as a copy of. */
@@ -1226,6 +1231,8 @@ public final class WindSpears {
 		boolean stuck;
 		/** Thrown by a mob (a drowned): only hurts players, is only a copy, never picked up. */
 		boolean mob;
+		/** It has hit something and bounced off: it falls, and hurts nothing more (like a trident that has dealt its damage). */
+		boolean spent;
 		int stuckTicks;
 		BlockPos stuckBlock;
 
@@ -1307,7 +1314,7 @@ public final class WindSpears {
 			return flyHome(spear);
 		}
 
-		spear.vy -= GRAVITY;
+		spear.vy -= spear.spent ? SPENT_GRAVITY : GRAVITY;
 
 		// like an arrow, a spear loses speed in liquid
 		BlockPos here = new BlockPos((int) Math.floor(spear.x), (int) Math.floor(spear.y), (int) Math.floor(spear.z));
@@ -1354,7 +1361,7 @@ public final class WindSpears {
 			spear.lastFreeZ = pz;
 
 			for (LivingEntity target : level.getEntitiesOfClass(LivingEntity.class, new AABB(px - 1.5, py - 1.5, pz - 1.5, px + 1.5, py + 1.5, pz + 1.5))) {
-				if (target.getUUID().equals(spear.owner) || !target.isAlive() || spear.hit.contains(target.getUUID())
+				if (spear.spent || target.getUUID().equals(spear.owner) || !target.isAlive() || spear.hit.contains(target.getUUID())
 						|| (target instanceof ServerPlayer other && other.isSpectator())
 						|| (spear.mob && !(target instanceof Player))) {
 					continue;
@@ -1369,8 +1376,10 @@ public final class WindSpears {
 
 				if (spear.pierceLeft > 0) {
 					spear.pierceLeft--;
-				} else {
+				} else if (spear.loyalty > 0) {
 					return finish(spear, px, py, pz);
+				} else {
+					return bounce(spear, px, py, pz);
 				}
 			}
 		}
@@ -1392,6 +1401,25 @@ public final class WindSpears {
 		String by = owner != null ? " by " + spear.owner : "";
 		ArenaBoss.command(level, ArenaBoss.quietSource(level), String.format(Locale.ROOT,
 				"damage %s %.1f minecraft:trident%s", target.getUUID(), spear.damage, by));
+	}
+
+	/**
+	 * A spear without Loyalty has hit an entity: like a trident, it bounces off a little and falls. It lands in the first block it
+	 * meets (see {@link #stick}) and can be picked up from there, instead of turning into an item on the spot.
+	 */
+	private static boolean bounce(Thrown spear, double x, double y, double z) {
+		spear.spent = true;
+		spear.x = x;
+		spear.y = y;
+		spear.z = z;
+		spear.lastFreeX = x;
+		spear.lastFreeY = y;
+		spear.lastFreeZ = z;
+		spear.vx *= BOUNCE_SIDEWAYS;
+		spear.vy *= BOUNCE_VERTICAL;
+		spear.vz *= BOUNCE_SIDEWAYS;
+		SpearVisual.move(spear.level, spear.id, x, y, z, spear.vx, spear.vy, spear.vz, spear.age);
+		return true;
 	}
 
 	/** The spear hit a block: it sticks in it, pointing the way it was flying (like a trident). */

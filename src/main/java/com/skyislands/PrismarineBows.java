@@ -40,6 +40,7 @@ import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.Items;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.level.block.Blocks;
+import net.minecraft.world.level.block.DispenserBlock;
 import net.minecraft.world.phys.Vec3;
 
 /**
@@ -161,6 +162,11 @@ public final class PrismarineBows {
 		bowProperties.component(DataComponents.ITEM_MODEL, bowId);
 		bowProperties.component(DataComponents.ITEM_NAME, Component.translatable("item.sky_islands.prismarine_bow"));
 		PRISMARINE_BOW = Registry.register(BuiltInRegistries.ITEM, bowId, new PrismarineBowItem(bowProperties));
+
+		// A dispenser only fires what it has a behaviour for, otherwise it spits the item out. This is the same registration the
+		// vanilla arrow gets; the arrow it makes is picked up by onEntityLoad like any other (so it is marked, drawn as the item,
+		// slowed to ARROW_RANGE_FACTOR, and shatters where it lands).
+		DispenserBlock.registerProjectileBehavior(PRISMARINE_ARROW);
 
 		// creative tabs: next to the vanilla arrow and bow
 		CreativeModeTabEvents.modifyOutputEvent(CreativeModeTabs.COMBAT).register(output -> {

@@ -24,7 +24,7 @@ import net.minecraft.world.item.ItemStack;
  *
  * <ul>
  * <li><b>Spawning</b>: a drowned that spawns naturally with nothing in its main hand has a {@link #BOW_CHANCE} chance to get a
- * Prismarine Bow. A vanilla drowned gets a trident about 6.25% of the time, so this is half as likely as a trident. It is
+ * Prismarine Bow. A vanilla drowned gets a trident about 6.25% of the time, so this is twice as likely as a trident. It is
  * rolled on top of the vanilla equipment (a drowned that already has a trident or a fishing rod is left alone), so tridents
  * are as common as before. Drowned made by a command, a spawn egg, a spawner or a zombie drowning, and the rain drowned of
  * {@code RainDrowned}, are not touched.</li>
@@ -36,8 +36,8 @@ import net.minecraft.world.item.ItemStack;
  * </ul>
  */
 final class PrismarineDrowned {
-	/** Half of a vanilla drowned's chance (6.25%) to spawn with a trident. */
-	static final double BOW_CHANCE = 0.03125;
+	/** Twice a vanilla drowned's chance (6.25%) to spawn with a trident. */
+	static final double BOW_CHANCE = 0.125;
 
 	/** Starts shooting between these distances (blocks) and keeps going between the wider ones. */
 	private static final double START_MIN_RANGE = 5.0;
