@@ -172,6 +172,9 @@ public final class WindSpears {
 	/** A thrown spear with Loyalty that gets farther than this many blocks from its owner comes back at once. */
 	private static final double LOYALTY_RECALL_BLOCKS = 90.0;
 
+	/** The attack speed every Wind Spear starts with (the vanilla spears are slower); a player's own base is 4.0, so the modifier is this minus 4. */
+	private static final double WIND_SPEAR_ATTACK_SPEED = 1.3;
+
 	/** Arrows keep 60% of their speed per tick in water; a Wind Spear does the same. */
 	private static final double WATER_DRAG = 0.6;
 	/** Lava is thicker still. */
@@ -330,6 +333,11 @@ public final class WindSpears {
 				continue;
 			}
 
+			if (component.type() == DataComponents.ATTRIBUTE_MODIFIERS && component.value() instanceof ItemAttributeModifiers modifiers) {
+				builder.set(DataComponents.ATTRIBUTE_MODIFIERS, withAttackSpeed(modifiers));
+				continue;
+			}
+
 			copy(builder, component);
 		}
 
@@ -337,6 +345,23 @@ public final class WindSpears {
 		String tier = id.getPath().substring(0, id.getPath().length() - "_windspear".length());
 		builder.set(DataComponents.ITEM_MODEL, id);
 		builder.set(DataComponents.ITEM_NAME, Component.translatable("item.sky_islands." + tier + "_windspear"));
+	}
+
+	/** The vanilla spear's attribute modifiers with the attack speed replaced by WIND_SPEAR_ATTACK_SPEED (damage and the rest are kept). */
+	private static ItemAttributeModifiers withAttackSpeed(ItemAttributeModifiers original) {
+		ItemAttributeModifiers.Builder builder = ItemAttributeModifiers.builder();
+
+		for (ItemAttributeModifiers.Entry entry : original.modifiers()) {
+			AttributeModifier modifier = entry.modifier();
+
+			if (entry.attribute().equals(Attributes.ATTACK_SPEED)) {
+				modifier = new AttributeModifier(modifier.id(), WIND_SPEAR_ATTACK_SPEED - 4.0, modifier.operation());
+			}
+
+			builder.add(entry.attribute(), modifier, entry.slot());
+		}
+
+		return builder.build();
 	}
 
 	private static <T> void copy(DataComponentMap.Builder builder, TypedDataComponent<T> component) {
