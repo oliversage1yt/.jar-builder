@@ -156,11 +156,11 @@ public final class WindSpears {
 	private static final int SOFT_LANDING_SCAN_BLOCKS = 40;
 
 	/**
-	 * Fall parry: a Wind Spear with Wind Burst but without Riptide that STARTS blocking this many ticks (1 second) or less before
+	 * Fall parry: a Wind Spear with Wind Burst but without Riptide that STARTS blocking this many ticks (3 seconds) or less before
 	 * a landing cuts that landing's fall damage by FALL_PARRY_REDUCTION. Holding the block through the whole fall does not
 	 * count: the block has to be (re)started inside this window.
 	 */
-	private static final int FALL_PARRY_WINDOW_TICKS = 20;
+	private static final int FALL_PARRY_WINDOW_TICKS = 60;
 	/** The cut in fall damage of a parried landing (75%). */
 	private static final float FALL_PARRY_REDUCTION = 0.75F;
 	/** An entity thrown up by a blocking Wind Burst spear takes this much less fall damage on the landing (50%). */
@@ -168,7 +168,7 @@ public final class WindSpears {
 	/** A launched entity that has still not come down after this many ticks (30 seconds) loses its reduced landing. */
 	private static final int LAUNCH_TIMEOUT_TICKS = 600;
 	/** A thrown spear with Loyalty that gets farther than this many blocks from its owner comes back at once. */
-	private static final double LOYALTY_RECALL_BLOCKS = 60.0;
+	private static final double LOYALTY_RECALL_BLOCKS = 90.0;
 
 	/** Arrows keep 60% of their speed per tick in water; a Wind Spear does the same. */
 	private static final double WATER_DRAG = 0.6;

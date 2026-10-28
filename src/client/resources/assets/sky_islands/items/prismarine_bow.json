@@ -1,35 +1,118 @@
 {
   "model": {
-    "type": "minecraft:condition",
-    "property": "minecraft:using_item",
-    "on_false": {
-      "type": "minecraft:model",
-      "model": "sky_islands:item/prismarine_bow"
-    },
-    "on_true": {
-      "type": "minecraft:range_dispatch",
-      "property": "minecraft:use_duration",
-      "scale": 0.0385,
-      "entries": [
-        {
-          "threshold": 0.5,
-          "model": {
+    "type": "minecraft:select",
+    "property": "minecraft:display_context",
+    "cases": [
+      {
+        "when": [
+          "gui",
+          "ground",
+          "fixed"
+        ],
+        "model": {
+          "type": "minecraft:condition",
+          "property": "minecraft:using_item",
+          "on_false": {
             "type": "minecraft:model",
-            "model": "sky_islands:item/prismarine_bow_pulling_1"
+            "model": "sky_islands:item/prismarine_bow"
+          },
+          "on_true": {
+            "type": "minecraft:range_dispatch",
+            "property": "minecraft:use_duration",
+            "scale": 0.0385,
+            "entries": [
+              {
+                "threshold": 0.5,
+                "model": {
+                  "type": "minecraft:model",
+                  "model": "sky_islands:item/prismarine_bow_pulling_1"
+                }
+              },
+              {
+                "threshold": 0.9,
+                "model": {
+                  "type": "minecraft:model",
+                  "model": "sky_islands:item/prismarine_bow_pulling_2"
+                }
+              }
+            ],
+            "fallback": {
+              "type": "minecraft:model",
+              "model": "sky_islands:item/prismarine_bow"
+            }
+          }
+        }
+      }
+    ],
+    "fallback": {
+      "type": "minecraft:composite",
+      "models": [
+        {
+          "type": "minecraft:condition",
+          "property": "minecraft:using_item",
+          "on_false": {
+            "type": "minecraft:model",
+            "model": "sky_islands:item/prismarine_bow"
+          },
+          "on_true": {
+            "type": "minecraft:range_dispatch",
+            "property": "minecraft:use_duration",
+            "scale": 0.0385,
+            "entries": [
+              {
+                "threshold": 0.5,
+                "model": {
+                  "type": "minecraft:model",
+                  "model": "sky_islands:item/prismarine_bow_pulling_1"
+                }
+              },
+              {
+                "threshold": 0.9,
+                "model": {
+                  "type": "minecraft:model",
+                  "model": "sky_islands:item/prismarine_bow_pulling_2"
+                }
+              }
+            ],
+            "fallback": {
+              "type": "minecraft:model",
+              "model": "sky_islands:item/prismarine_bow"
+            }
           }
         },
         {
-          "threshold": 0.9,
-          "model": {
-            "type": "minecraft:model",
-            "model": "sky_islands:item/prismarine_bow_pulling_2"
+          "type": "minecraft:condition",
+          "property": "minecraft:using_item",
+          "on_false": {
+            "type": "minecraft:empty"
+          },
+          "on_true": {
+            "type": "minecraft:range_dispatch",
+            "property": "minecraft:use_duration",
+            "scale": 0.0385,
+            "entries": [
+              {
+                "threshold": 0.5,
+                "model": {
+                  "type": "minecraft:model",
+                  "model": "sky_islands:item/prismarine_arrow_pulling_1"
+                }
+              },
+              {
+                "threshold": 0.9,
+                "model": {
+                  "type": "minecraft:model",
+                  "model": "sky_islands:item/prismarine_arrow_pulling_2"
+                }
+              }
+            ],
+            "fallback": {
+              "type": "minecraft:model",
+              "model": "sky_islands:item/prismarine_arrow_pulling_0"
+            }
           }
         }
-      ],
-      "fallback": {
-        "type": "minecraft:model",
-        "model": "sky_islands:item/prismarine_bow"
-      }
+      ]
     }
   }
 }
