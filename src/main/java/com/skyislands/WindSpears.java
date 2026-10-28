@@ -155,6 +155,21 @@ public final class WindSpears {
 	/** How far down to look for the ground (blocks). */
 	private static final int SOFT_LANDING_SCAN_BLOCKS = 40;
 
+	/**
+	 * Fall parry: a Wind Spear with Wind Burst but without Riptide that STARTS blocking this many ticks (1 second) or less before
+	 * a landing cuts that landing's fall damage by FALL_PARRY_REDUCTION. Holding the block through the whole fall does not
+	 * count: the block has to be (re)started inside this window.
+	 */
+	private static final int FALL_PARRY_WINDOW_TICKS = 20;
+	/** The cut in fall damage of a parried landing (75%). */
+	private static final float FALL_PARRY_REDUCTION = 0.75F;
+	/** An entity thrown up by a blocking Wind Burst spear takes this much less fall damage on the landing (50%). */
+	private static final float LAUNCHED_FALL_REDUCTION = 0.5F;
+	/** A launched entity that has still not come down after this many ticks (30 seconds) loses its reduced landing. */
+	private static final int LAUNCH_TIMEOUT_TICKS = 600;
+	/** A thrown spear with Loyalty that gets farther than this many blocks from its owner comes back at once. */
+	private static final double LOYALTY_RECALL_BLOCKS = 60.0;
+
 	/** Arrows keep 60% of their speed per tick in water; a Wind Spear does the same. */
 	private static final double WATER_DRAG = 0.6;
 	/** Lava is thicker still. */
@@ -195,6 +210,10 @@ public final class WindSpears {
 	private static final Map<UUID, Double> LAST_Y = new HashMap<>();
 	private static final Map<UUID, Double> SPEED_Y = new HashMap<>();
 	private static final Map<UUID, Double> FALLEN = new HashMap<>();
+	/** Players who started a block in the air: the last tick their landing is parried (see FALL_PARRY_WINDOW_TICKS). */
+	private static final Map<UUID, Integer> FALL_PARRY_UNTIL = new HashMap<>();
+	/** Entities a blocking Wind Burst spear threw up and that have not landed yet (value: the tick of the launch). */
+	private static final Map<UUID, Integer> LAUNCHED = new HashMap<>();
 	/** Players who were blocking last tick, to see the moment a block starts. */
 	private static final Set<UUID> WAS_BLOCKING = new HashSet<>();
 	/** Players currently holding the block (value: the tick of the client's last message). */
@@ -274,6 +293,7 @@ public final class WindSpears {
 		});
 		ServerLivingEntityEvents.ALLOW_DAMAGE.register((entity, source, amount) -> !blocks(entity, source));
 		ServerLivingEntityEvents.ALLOW_DAMAGE.register((entity, source, amount) -> !softLanding(entity, source, amount));
+		ServerLivingEntityEvents.ALLOW_DAMAGE.register((entity, source, amount) -> !fallReduction(entity, source, amount));
 	}
 
 	public static void clear() {
@@ -286,6 +306,8 @@ public final class WindSpears {
 		NEXT_POKE.clear();
 		LUNGE_WAIT.clear();
 		SOFT_LANDING_UNTIL.clear();
+		FALL_PARRY_UNTIL.clear();
+		LAUNCHED.clear();
 		LAST_Y.clear();
 		SPEED_Y.clear();
 		FALLEN.clear();
@@ -652,6 +674,8 @@ public final class WindSpears {
 
 	/** The block flag on the spear in use (cleared again when the block ends). The slowness is done on the client, see WindBlockInput. */
 	private static void blockTick(MinecraftServer server, int now) {
+		trackLaunched(server, now);
+
 		for (ServerPlayer player : server.getPlayerList().getPlayers()) {
 			boolean blocking = isBlocking(player, now);
 
@@ -671,9 +695,19 @@ public final class WindSpears {
 				SOFT_LANDING_UNTIL.remove(player.getUUID());
 			}
 
+			// a parry only lives until the player is down (the landing's damage has been dealt by now) or its window is over
+			Integer parry = FALL_PARRY_UNTIL.get(player.getUUID());
+
+			if (parry != null && (parry < now || landed(player))) {
+				FALL_PARRY_UNTIL.remove(player.getUUID());
+			}
+
 			if (blocking) {
 				// every tick of a block, a Wind Burst spear launches whatever the player is looking at (the cooldown stops repeats)
-				WAS_BLOCKING.add(player.getUUID());
+				if (WAS_BLOCKING.add(player.getUUID())) {
+					startFallParry(player, now);
+				}
+
 				blockBurst(player, now);
 			} else {
 				WAS_BLOCKING.remove(player.getUUID());
@@ -1113,6 +1147,95 @@ public final class WindSpears {
 		return true;
 	}
 
+	/** True when the stack is a Wind Spear with Wind Burst and without Riptide (the one that blocks and can parry a landing). */
+	private static boolean parrySpear(ItemStack stack) {
+		return isWindSpear(stack) && levelOf(stack, WIND_BURST) > 0 && levelOf(stack, RIPTIDE) <= 0;
+	}
+
+	/**
+	 * The moment a block starts: in the air, with a Wind Burst spear that has no Riptide (those have their own soft landing),
+	 * the landing that comes within the next FALL_PARRY_WINDOW_TICKS is parried. A block that was already being held does not
+	 * pass through here again, so holding it for the whole fall earns nothing.
+	 */
+	private static void startFallParry(ServerPlayer player, int now) {
+		if (!parrySpear(player.getUseItem()) || landed(player)) {
+			return;
+		}
+
+		FALL_PARRY_UNTIL.put(player.getUUID(), now + FALL_PARRY_WINDOW_TICKS);
+	}
+
+	/** Forgets launched entities that have come down (or are gone, or never came down). */
+	private static void trackLaunched(MinecraftServer server, int now) {
+		if (LAUNCHED.isEmpty()) {
+			return;
+		}
+
+		Iterator<Map.Entry<UUID, Integer>> it = LAUNCHED.entrySet().iterator();
+
+		while (it.hasNext()) {
+			Map.Entry<UUID, Integer> entry = it.next();
+			Entity entity = null;
+
+			for (ServerLevel level : server.getAllLevels()) {
+				entity = level.getEntity(entry.getKey());
+
+				if (entity != null) {
+					break;
+				}
+			}
+
+			int age = now - entry.getValue();
+
+			// the first few ticks are still on the ground (the launch itself)
+			if (entity == null || entity.isRemoved() || age > LAUNCH_TIMEOUT_TICKS
+					|| (age > 5 && (entity.onGround() || entity.isInWater() || entity.isInLava() || entity.isPassenger()))) {
+				it.remove();
+			}
+		}
+	}
+
+	/**
+	 * Fall damage cut for two cases (the better cut wins, they do not stack): a landing parried by a blocking Wind Burst spear
+	 * (75%), and the landing of an entity a blocking Wind Burst spear threw up (50%). The hit is cancelled and the smaller
+	 * one is dealt in its place (the flags are spent first, so the smaller hit is not cut again). Returns true when the
+	 * original hit was replaced.
+	 */
+	private static boolean fallReduction(LivingEntity entity, DamageSource source, float amount) {
+		if (!source.is(DamageTypeTags.IS_FALL) || !(entity.level() instanceof ServerLevel level)) {
+			return false;
+		}
+
+		UUID id = entity.getUUID();
+		int now = level.getServer().getTickCount();
+		float cut = 0.0F;
+
+		if (entity instanceof ServerPlayer player) {
+			Integer until = FALL_PARRY_UNTIL.remove(id);
+
+			if (until != null && until >= now && (parrySpear(player.getMainHandItem()) || parrySpear(player.getOffhandItem()))) {
+				cut = FALL_PARRY_REDUCTION;
+			}
+		}
+
+		if (LAUNCHED.remove(id) != null) {
+			cut = Math.max(cut, LAUNCHED_FALL_REDUCTION);
+		}
+
+		if (cut <= 0.0F) {
+			return false;
+		}
+
+		level.sendParticles(ParticleTypes.CLOUD, entity.getX(), entity.getY() + 0.1, entity.getZ(), 16, 0.5, 0.1, 0.5, 0.1);
+		float rest = amount * (1.0F - cut);
+
+		if (rest > 0.0F) {
+			entity.hurtServer(level, source, rest);
+		}
+
+		return true;
+	}
+
 	/** A spear with Wind Burst but without Riptide, the moment its holder starts to block: whatever they look at is thrown up. */
 	private static void blockBurst(ServerPlayer player, int now) {
 		ItemStack stack = player.getUseItem();
@@ -1146,6 +1269,11 @@ public final class WindSpears {
 		Vec3 motion = target.getDeltaMovement();
 		launch(level, target, new Vec3(motion.x, burstLift(burst), motion.z));
 		burstEffects(level, target.getX(), target.getY(), target.getZ(), burst);
+
+		// whatever was thrown up only takes half the fall damage when it lands
+		if (target instanceof LivingEntity) {
+			LAUNCHED.put(target.getUUID(), now);
+		}
 
 		if (!player.isCreative() && wear(stack, player)) {
 			stack.shrink(1);
@@ -1294,6 +1422,17 @@ public final class WindSpears {
 	/** Returns false when the spear is finished (picked up again, dropped, or lost). */
 	private static boolean advance(Thrown spear) {
 		ServerLevel level = spear.level;
+
+		// Loyalty: a spear that gets more than LOYALTY_RECALL_BLOCKS from its owner comes back at once, into their inventory
+		if (spear.loyalty > 0 && !spear.creative && !spear.mob) {
+			Player owner = level.getPlayerByUUID(spear.owner);
+
+			if (owner != null && owner.isAlive() && owner.distanceToSqr(spear.x, spear.y, spear.z) > LOYALTY_RECALL_BLOCKS * LOYALTY_RECALL_BLOCKS) {
+				level.sendParticles(ParticleTypes.CLOUD, spear.x, spear.y, spear.z, 8, 0.2, 0.2, 0.2, 0.05);
+				giveBack(spear, owner);
+				return false;
+			}
+		}
 
 		if (spear.stuck) {
 			return stuckTick(spear);
@@ -1553,6 +1692,18 @@ public final class WindSpears {
 		spear.level.addFreshEntity(item);
 	}
 
+	/** The spear goes into its owner's inventory (or drops at their feet if it is full) with the trident's return sound. */
+	private static void giveBack(Thrown spear, Player owner) {
+		ServerLevel level = spear.level;
+
+		if (!owner.getInventory().add(spear.stack)) {
+			drop(spear, owner.getX(), owner.getY() + 0.5, owner.getZ());
+		}
+
+		ArenaBoss.command(level, ArenaBoss.quietSource(level), String.format(Locale.ROOT,
+				"playsound minecraft:item.trident.return player @a %.1f %.1f %.1f 1.0 1.0", owner.getX(), owner.getY(), owner.getZ()));
+	}
+
 	/** Loyalty: the spear turns around and flies back to its owner, whose inventory gets it again. */
 	private static boolean flyHome(Thrown spear) {
 		ServerLevel level = spear.level;
@@ -1575,12 +1726,7 @@ public final class WindSpears {
 		double distance = Math.sqrt(dx * dx + dy * dy + dz * dz);
 
 		if (distance < 1.6) {
-			if (!owner.getInventory().add(spear.stack)) {
-				drop(spear, owner.getX(), owner.getY() + 0.5, owner.getZ());
-			}
-
-			ArenaBoss.command(level, ArenaBoss.quietSource(level), String.format(Locale.ROOT,
-					"playsound minecraft:item.trident.return player @a %.1f %.1f %.1f 1.0 1.0", owner.getX(), owner.getY(), owner.getZ()));
+			giveBack(spear, owner);
 			return false;
 		}
 

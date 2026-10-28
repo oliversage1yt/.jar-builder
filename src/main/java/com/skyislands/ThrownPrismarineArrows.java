@@ -30,8 +30,8 @@ import net.minecraft.world.phys.AABB;
  * A Prismarine Arrow thrown by hand (right click with it, see {@code PrismarineBows.PrismarineArrowItem}).
  *
  * <ul>
- * <li>It hurts as much as a stone sword (read from the vanilla stone sword's attack damage; {@link #FALLBACK_DAMAGE}, which is
- * 5, if that cannot be read).</li>
+ * <li>It hurts half as much as a stone sword (read from the vanilla stone sword's attack damage, times {@link #DAMAGE_MULTIPLIER};
+ * {@link #FALLBACK_DAMAGE}, which is 5, if that cannot be read).</li>
  * <li>It flies straight for only {@link #STRAIGHT_RANGE} blocks, then loses its forward speed and drops.</li>
  * <li>There is <b>no cooldown</b>: it is thrown on every click, so a player can spam them at a target for quick damage. One
  * arrow is used up per throw (none in creative mode), and the arrow shatters where it lands, like the shot ones.</li>
@@ -53,6 +53,8 @@ final class ThrownPrismarineArrows {
 	private static final int MAX_AGE = 80;
 	/** The damage if the stone sword's damage cannot be read (a stone sword: 4 attack damage + 1 for the hand). */
 	private static final float FALLBACK_DAMAGE = 5.0F;
+	/** A thrown arrow does this part of a stone sword's damage. */
+	private static final float DAMAGE_MULTIPLIER = 0.5F;
 
 	private static final List<Flying> FLYING = new ArrayList<>();
 	private static Float stoneSwordDamage;
@@ -93,7 +95,7 @@ final class ThrownPrismarineArrows {
 			stoneSwordDamage = found;
 		}
 
-		return stoneSwordDamage;
+		return stoneSwordDamage * DAMAGE_MULTIPLIER;
 	}
 
 	/** Throws one Prismarine Arrow from the stack the player holds (the stack is the one in their hand: one arrow is taken from it). */

@@ -50,7 +50,7 @@ import net.minecraft.world.item.enchantment.ItemEnchantments;
  * <p><b>Stick</b>: a plain item, crafted from 2 prismarine shards (data/sky_islands/recipe/prismarine_stick.json).
  *
  * <p><b>Axe</b>: a real axe (built with {@code Item.Properties.axe}) (so it strips logs and scrapes copper like any axe, and mines and takes
- * Efficiency like one), one step above netherite in damage (11 instead of 10) and with a base attack speed of 1.2.
+ * Efficiency like one), one step above netherite in damage (11 instead of 10) and with a base attack speed of 0.8 (the same as a wooden axe).
  * Which enchantments it accepts is decided by item tags, in data/minecraft/tags/item/enchantable and
  * data/sky_islands/tags/item/enchantable:
  * <ul>
@@ -74,11 +74,11 @@ public final class PrismarineItems {
 	private static final float MATERIAL_DAMAGE_BONUS = 5.0F;
 	/** Base damage modifier of a vanilla axe (the netherite axe uses it too). */
 	private static final float AXE_BASE_DAMAGE = 5.0F;
-	/** A player's attack speed is 4.0 before the weapon; the axe's modifier makes it 1.2. */
-	private static final float AXE_ATTACK_SPEED_MODIFIER = 1.2F - 4.0F;
+	/** A player's attack speed is 4.0 before the weapon; the axe's modifier makes it 0.8, the same as a wooden axe. */
+	private static final float AXE_ATTACK_SPEED_MODIFIER = 0.8F - 4.0F;
 
 	/**
-	 * Attack speed added per level of Efficiency while a Prismarine Axe is held. POSITIVE = faster (1.2 -> 1.3 -> 1.4 ...).
+	 * Attack speed added per level of Efficiency while a Prismarine Axe is held. POSITIVE = faster (0.8 -> 0.9 -> 1.0 ...).
 	 * Make it negative for an Efficiency that swings slower instead.
 	 */
 	private static final double EFFICIENCY_ATTACK_SPEED_PER_LEVEL = 0.1;
@@ -177,7 +177,7 @@ public final class PrismarineItems {
 	 * Efficiency on a Prismarine Axe changes how fast it swings, not how fast it mines:
 	 * <ul>
 	 * <li>The axe's own attack speed modifier (on the item, so the tooltip and the cooldown both use it) is rewritten to
-	 * 1.2 + {@link #EFFICIENCY_ATTACK_SPEED_PER_LEVEL} x level: Efficiency I = 1.3, II = 1.4 ... Axes in the main hand and
+	 * 0.8 + {@link #EFFICIENCY_ATTACK_SPEED_PER_LEVEL} x level: Efficiency I = 0.9, II = 1.0 ... Axes in the main hand and
 	 * off hand are kept up to date every tick, the rest of the inventory once a second.</li>
 	 * <li>Vanilla Efficiency's mining boost (level squared + 1, an attribute on the player) is cancelled with an equal
 	 * negative transient modifier while a Prismarine Axe with Efficiency is in the main hand.</li>
