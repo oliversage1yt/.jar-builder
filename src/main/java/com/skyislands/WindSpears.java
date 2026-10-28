@@ -156,12 +156,12 @@ public final class WindSpears {
 	private static final int SOFT_LANDING_SCAN_BLOCKS = 40;
 
 	/**
-	 * Fall parry: a Wind Spear with Wind Burst but without Riptide that STARTS blocking this many ticks (3 seconds) or less before
+	 * Fall parry: a Wind Spear with Wind Burst but without Riptide that STARTS blocking this many ticks (1 second) or less before
 	 * a landing cuts that landing's fall damage by FALL_PARRY_REDUCTION. Holding the block through the whole fall does not
 	 * count: the block has to be (re)started inside this window.
 	 */
-	private static final int FALL_PARRY_WINDOW_TICKS = 60;
-	/** How far down the parry looks for the ground (blocks): with a 3 second window a fast fall covers a lot of ground. */
+	private static final int FALL_PARRY_WINDOW_TICKS = 20;
+	/** How far down the parry looks for the ground (blocks): with a 1 second window a fast fall still covers a lot of ground. */
 	private static final int FALL_PARRY_SCAN_BLOCKS = 256;
 	/** The cut in fall damage of a parried landing (75%). */
 	private static final float FALL_PARRY_REDUCTION = 0.75F;
@@ -1161,7 +1161,7 @@ public final class WindSpears {
 	/**
 	 * The moment a block starts (the same rules as the Riptide + Wind Burst soft landing, with the block in place of the poke):
 	 * with a Wind Burst spear that has no Riptide, while falling fast enough, after a fall long enough to hurt, with the ground
-	 * no more than FALL_PARRY_WINDOW_TICKS (3 seconds) away at the present speed, a burst goes off at once (costing a use of
+	 * no more than FALL_PARRY_WINDOW_TICKS (1 second) away at the present speed, a burst goes off at once (costing a use of
 	 * the spear, like a launch) and the landing that follows is parried (see {@link #fallReduction}). A block that was already
 	 * being held does not pass through here again, so holding it for the whole fall earns nothing: it has to be started inside
 	 * the window.
