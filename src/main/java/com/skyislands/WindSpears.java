@@ -161,6 +161,8 @@ public final class WindSpears {
 	 * count: the block has to be (re)started inside this window.
 	 */
 	private static final int FALL_PARRY_WINDOW_TICKS = 60;
+	/** How far down the parry looks for the ground (blocks): with a 3 second window a fast fall covers a lot of ground. */
+	private static final int FALL_PARRY_SCAN_BLOCKS = 256;
 	/** The cut in fall damage of a parried landing (75%). */
 	private static final float FALL_PARRY_REDUCTION = 0.75F;
 	/** An entity thrown up by a blocking Wind Burst spear takes this much less fall damage on the landing (50%). */
@@ -698,7 +700,7 @@ public final class WindSpears {
 			// a parry only lives until the player is down (the landing's damage has been dealt by now) or its window is over
 			Integer parry = FALL_PARRY_UNTIL.get(player.getUUID());
 
-			if (parry != null && (parry < now || landed(player))) {
+			if (parry != null && (parry < now || (landed(player) && now - (parry - FALL_PARRY_WINDOW_TICKS - 20) > 3))) {
 				FALL_PARRY_UNTIL.remove(player.getUUID());
 			}
 
@@ -1065,11 +1067,15 @@ public final class WindSpears {
 
 	/** How far below the player's feet the first block they would land on is (blocks), or -1 if there is none in reach. */
 	private static double groundBelow(ServerLevel level, ServerPlayer player) {
+		return groundBelow(level, player, SOFT_LANDING_SCAN_BLOCKS);
+	}
+
+	private static double groundBelow(ServerLevel level, ServerPlayer player, int scanBlocks) {
 		int x = (int) Math.floor(player.getX());
 		int z = (int) Math.floor(player.getZ());
 		int top = (int) Math.floor(player.getY() - 1.0E-3);
 
-		for (int by = top; by >= top - SOFT_LANDING_SCAN_BLOCKS; by--) {
+		for (int by = top; by >= top - scanBlocks; by--) {
 			BlockPos pos = new BlockPos(x, by, z);
 
 			if (!level.hasChunkAt(pos)) {
@@ -1153,16 +1159,56 @@ public final class WindSpears {
 	}
 
 	/**
-	 * The moment a block starts: in the air, with a Wind Burst spear that has no Riptide (those have their own soft landing),
-	 * the landing that comes within the next FALL_PARRY_WINDOW_TICKS is parried. A block that was already being held does not
-	 * pass through here again, so holding it for the whole fall earns nothing.
+	 * The moment a block starts (the same rules as the Riptide + Wind Burst soft landing, with the block in place of the poke):
+	 * with a Wind Burst spear that has no Riptide, while falling fast enough, after a fall long enough to hurt, with the ground
+	 * no more than FALL_PARRY_WINDOW_TICKS (3 seconds) away at the present speed, a burst goes off at once (costing a use of
+	 * the spear, like a launch) and the landing that follows is parried (see {@link #fallReduction}). A block that was already
+	 * being held does not pass through here again, so holding it for the whole fall earns nothing: it has to be started inside
+	 * the window.
 	 */
 	private static void startFallParry(ServerPlayer player, int now) {
-		if (!parrySpear(player.getUseItem()) || landed(player)) {
+		ItemStack stack = player.getUseItem();
+
+		if (!parrySpear(stack) || !(player.level() instanceof ServerLevel level)) {
 			return;
 		}
 
-		FALL_PARRY_UNTIL.put(player.getUUID(), now + FALL_PARRY_WINDOW_TICKS);
+		UUID id = player.getUUID();
+		double speed = SPEED_Y.getOrDefault(id, 0.0);
+		double fallen = FALLEN.getOrDefault(id, 0.0);
+		String why = null;
+		double ground = -1.0;
+
+		if (landed(player)) {
+			why = "on the ground";
+		} else if (speed > -0.2) {
+			why = "not falling fast enough";
+		} else if (fallen <= SOFT_LANDING_MIN_FALL) {
+			why = "fall too short to hurt";
+		} else {
+			ground = groundBelow(level, player, FALL_PARRY_SCAN_BLOCKS);
+
+			if (ground < 0.0) {
+				why = "no ground found below";
+			} else if (ground > fallIn(speed, FALL_PARRY_WINDOW_TICKS)) {
+				why = "ground too far for the window";
+			}
+		}
+
+		SkyIslands.LOGGER.info("Sky Islands: fall parry block started: {} (speed={}, fallen={}, ground={})",
+				why == null ? "ARMED" : "not armed, " + why, String.format(Locale.ROOT, "%.2f", speed),
+				String.format(Locale.ROOT, "%.1f", fallen), String.format(Locale.ROOT, "%.1f", ground));
+
+		if (why != null) {
+			return;
+		}
+
+		FALL_PARRY_UNTIL.put(id, now + FALL_PARRY_WINDOW_TICKS + 20);
+		burstEffects(level, player.getX(), player.getY(), player.getZ(), levelOf(stack, WIND_BURST));
+
+		if (!player.isCreative() && wear(stack, player)) {
+			stack.shrink(1);
+		}
 	}
 
 	/** Forgets launched entities that have come down (or are gone, or never came down). */
@@ -1213,7 +1259,7 @@ public final class WindSpears {
 		if (entity instanceof ServerPlayer player) {
 			Integer until = FALL_PARRY_UNTIL.remove(id);
 
-			if (until != null && until >= now && (parrySpear(player.getMainHandItem()) || parrySpear(player.getOffhandItem()))) {
+			if (until != null && until >= now) {
 				cut = FALL_PARRY_REDUCTION;
 			}
 		}
