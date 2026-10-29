@@ -24,6 +24,7 @@ public class SkyIslands implements ModInitializer {
 		ServerChunkEvents.CHUNK_GENERATE.register(GroundFreezer::onGenerate);
 		ServerTickEvents.END_SERVER_TICK.register(GroundFreezer::tick);
 		WindSpears.register();
+		FallenRocks.register();
 		PrismarineItems.register();
 		PrismarineBows.register();
 		ThrownPrismarineArrows.register();
@@ -37,6 +38,7 @@ public class SkyIslands implements ModInitializer {
 			GroundFreezer.clear();
 			ArenaBoss.clear();
 			WindSpears.clear();
+			FallenRocks.clear();
 			PrismarineItems.clear();
 			PrismarineBows.clear();
 			ThrownPrismarineArrows.clear();

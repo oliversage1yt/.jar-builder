@@ -1,0 +1,27 @@
+{
+  "placement": {
+    "type": "minecraft:random_spread",
+    "salt": 502719384,
+    "spacing": 15,
+    "separation": 5,
+    "frequency": 0.9028
+  },
+  "structures": [
+    {
+      "structure": "sky_islands:fallen_rock_1",
+      "weight": 1
+    },
+    {
+      "structure": "sky_islands:fallen_rock_2",
+      "weight": 1
+    },
+    {
+      "structure": "sky_islands:fallen_rock_3",
+      "weight": 1
+    },
+    {
+      "structure": "sky_islands:fallen_rock_4",
+      "weight": 1
+    }
+  ]
+}
