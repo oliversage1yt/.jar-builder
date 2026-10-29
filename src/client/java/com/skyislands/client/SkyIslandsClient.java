@@ -14,12 +14,14 @@ public class SkyIslandsClient implements ClientModInitializer {
 		GoldenFoliageTint.register();
 		MusicToast.register();
 		RecipeToastHud.register();
+		RockHighlight.register();
 
 		ClientTickEvents.END_CLIENT_TICK.register(client -> {
 			MusicController.tick(client);
 			CloudSpawner.tick(client);
 			RainAboveClouds.tick(client);
 			WindBlockInput.tick(client);
+			RockHighlight.tick(client);
 			PrismarineArrowHider.tick(client);
 		});
 

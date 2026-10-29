@@ -1,6 +1,8 @@
 package com.skyislands;
 
+import java.util.ArrayDeque;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Iterator;
@@ -16,34 +18,47 @@ import net.fabricmc.fabric.api.event.lifecycle.v1.ServerChunkEvents;
 import net.fabricmc.fabric.api.event.lifecycle.v1.ServerLifecycleEvents;
 import net.fabricmc.fabric.api.event.lifecycle.v1.ServerTickEvents;
 
+import net.fabricmc.fabric.api.event.player.UseBlockCallback;
+import net.fabricmc.fabric.api.networking.v1.PayloadTypeRegistry;
+import net.fabricmc.fabric.api.networking.v1.ServerPlayNetworking;
+
 import net.minecraft.core.BlockPos;
+import net.minecraft.core.Direction;
+import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.core.registries.Registries;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
+import net.minecraft.tags.BlockTags;
 import net.minecraft.tags.TagKey;
+import net.minecraft.world.InteractionHand;
+import net.minecraft.world.InteractionResult;
+import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.level.ChunkPos;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.chunk.LevelChunk;
+import net.minecraft.world.level.levelgen.Heightmap;
 import net.minecraft.world.level.levelgen.structure.BoundingBox;
 import net.minecraft.world.level.levelgen.structure.Structure;
 import net.minecraft.world.level.levelgen.structure.StructureStart;
+import net.minecraft.world.phys.BlockHitResult;
 
 /**
  * Fallen rocks (structures sky_islands:fallen_rock_1..4, tag sky_islands:fallen_rocks): small piles of deepslate that lie on
- * the ground. Stand on one for a second and it is recalled, like the fallen sky island rocks in Tears of the Kingdom: the
- * whole pile (real blocks) rises with you up to Y=430, hangs there for a moment so you can run off and glide to a nearby
- * island, then falls back down and becomes the same pile of rocks again, ready to be used again.
+ * the ground. Look at one (within normal block reach) and it gets a golden outline; right click it and it is recalled, like
+ * the fallen sky island rocks in Tears of the Kingdom: the whole pile (real blocks) rises with you up to Y=430, hangs there
+ * for a moment so you can run off and glide to a nearby island, then falls back down and becomes the same pile of rocks
+ * again. After it has come down it has a short cooldown, during which it has no outline and cannot be launched.
  *
  * <ul>
  * <li>A rock only works while it is whole: if even one of its blocks is gone (or one is added) it stays an ordinary pile for
  * good. This is judged from the blocks themselves, so a rock that was broken and put back together exactly looks whole again
  * after the server restarts.</li>
- * <li>A rock needs a clear way up (no block with collision, and no fluid, above it): a rock that would be generated with
- * something above it is removed again right after its chunk is generated, and a rock that gets covered later does not
- * work while it is covered.</li>
+ * <li>A rock needs a clear way up (no block with collision, and no fluid, above it; leaves do not count, they are broken
+ * when the rock moves). A rock that would be generated with something above it is moved to a nearby spot (within
+ * {@link #RELOCATE_RADIUS} blocks) that has a clear way up, and is only removed when there is no such spot.</li>
  * </ul>
  *
  * <p>The lift itself: the rock follows the rider's height block by block while the rider is held up by a Levitation effect
@@ -54,8 +69,6 @@ public final class FallenRocks {
 
 	/** The rock rises until the player standing on it is at this height. */
 	private static final int TARGET_Y = 430;
-	/** How long a player has to stand on a rock before it is recalled. */
-	private static final int STAND_TICKS = 20;
 	/** How long the rock stays at the top (8 seconds). */
 	private static final int HOVER_TICKS = 160;
 	/** After a rock has come down it cannot be recalled again for this long. */
@@ -74,6 +87,19 @@ public final class FallenRocks {
 	/** A rock is dropped to the ground at once when no player is within this many blocks (its chunks could unload). */
 	private static final double KEEP_ALIVE_RANGE = 160.0;
 	/** Chunks checked per tick after generation, and how many times a chunk is tried again while its neighbours are missing. */
+	/** A rock that is covered at generation is moved to a clear spot at most this many blocks away. */
+	private static final int RELOCATE_RADIUS = 10;
+	/** Leaf blocks are broken this many blocks around the rock's footprint as well, so the rider is not caught on a branch. */
+	private static final int LEAF_MARGIN = 1;
+	/** Whether broken leaves drop their items (saplings, sticks, apples). Off: a whole tree of leaves would spawn many items. */
+	private static final boolean LEAF_DROPS = false;
+	/** The most blocks one rock can have (the largest of the four has 19), for finding a rock from its blocks. */
+	private static final int MAX_ROCK_BLOCKS = 24;
+	/** How often (in ticks) the server re-checks whether the rock a player looks at is ready (cooldown over, still whole). */
+	private static final int HOVER_CHECK_TICKS = 5;
+	/** Sanity limit for the looked-at block (the client only sends blocks in normal reach; vanilla checks the real click). */
+	private static final double HOVER_MAX_RANGE = 7.0;
+	private static final long[] NONE = new long[0];
 	private static final int GEN_PER_TICK = 4;
 	private static final int GEN_MAX_TRIES = 200;
 
@@ -108,16 +134,11 @@ public final class FallenRocks {
 		}
 	}
 
-	/** What a player standing on a rock has to wait for (rock is null when this rock does not work). */
-	private static final class Pending {
-		final long key;
-		final Rock rock;
-		int ticks;
-
-		Pending(long key, Rock rock) {
-			this.key = key;
-			this.rock = rock;
-		}
+	/** The rock a player is looking at: the block under their crosshair, and what was last sent to them about it. */
+	private static final class Hover {
+		long pos;
+		long[] sent = NONE;
+		int next;
 	}
 
 	private static final class Generated {
@@ -133,7 +154,7 @@ public final class FallenRocks {
 	}
 
 	private static final Map<Long, Rock> ACTIVE = new HashMap<>();
-	private static final Map<UUID, Pending> PENDING = new HashMap<>();
+	private static final Map<UUID, Hover> HOVER = new HashMap<>();
 	/** Rocks that were seen with a block missing or added (until the server stops). */
 	private static final Set<Long> DEAD = new HashSet<>();
 	private static final Map<Long, Integer> COOLDOWN = new HashMap<>();
@@ -148,11 +169,15 @@ public final class FallenRocks {
 		ServerChunkEvents.CHUNK_GENERATE.register(FallenRocks::onGenerate);
 		ServerTickEvents.END_SERVER_TICK.register(FallenRocks::tick);
 		ServerLifecycleEvents.SERVER_STOPPING.register(FallenRocks::restoreAll);
+		PayloadTypeRegistry.serverboundPlay().register(RockHoverPayload.TYPE, RockHoverPayload.CODEC);
+		PayloadTypeRegistry.clientboundPlay().register(RockHighlightPayload.TYPE, RockHighlightPayload.CODEC);
+		ServerPlayNetworking.registerGlobalReceiver(RockHoverPayload.TYPE, (payload, context) -> onHover(context.player(), payload));
+		UseBlockCallback.EVENT.register(FallenRocks::onUseBlock);
 	}
 
 	public static void clear() {
 		ACTIVE.clear();
-		PENDING.clear();
+		HOVER.clear();
 		DEAD.clear();
 		COOLDOWN.clear();
 		QUEUE.clear();
@@ -186,7 +211,7 @@ public final class FallenRocks {
 			int now = server.getTickCount();
 			processGenerated();
 			advanceRocks(now);
-			scanPlayers(server, now);
+			updateHover(server, now);
 		} catch (Throwable t) {
 			disabled = true;
 			SkyIslands.LOGGER.error("Sky Islands fallen rocks failed and were disabled for this session", t);
@@ -237,9 +262,24 @@ public final class FallenRocks {
 					continue;
 				}
 
-				if (obstructed(level, box)) {
-					removeRock(level, box);
+				BlockPos blocker = findBlocker(level, box);
+
+				if (blocker == null) {
+					continue;
 				}
+
+				if (readCells(level, box).isEmpty()) {
+					// already moved or removed on an earlier try
+					continue;
+				}
+
+				if (!surroundingsLoaded(level, box) && next.tries < GEN_MAX_TRIES) {
+					// a spot to move to may be in a chunk that is not there yet
+					again = true;
+					continue;
+				}
+
+				coverRock(level, box, blocker);
 			}
 
 			if (again && next.tries < GEN_MAX_TRIES) {
@@ -258,8 +298,11 @@ public final class FallenRocks {
 				&& level.hasChunkAt(new BlockPos(box.minX(), 64, box.maxZ())) && level.hasChunkAt(new BlockPos(box.maxX(), 64, box.maxZ()));
 	}
 
-	/** Any block with collision, or any fluid, above the rock on the way up (to just above the top of the rise). */
-	private static boolean obstructed(ServerLevel level, BoundingBox box) {
+	/**
+	 * The first block with collision, or fluid, above the rock on the way up (to just above the top of the rise), or null when the
+	 * way is clear. Leaves do not count: they are broken when the rock moves.
+	 */
+	private static BlockPos findBlocker(ServerLevel level, BoundingBox box) {
 		int height = box.maxY() - box.minY() + 1;
 		int top = TARGET_Y + height + CLEARANCE_ABOVE_TARGET;
 		BlockPos.MutableBlockPos pos = new BlockPos.MutableBlockPos();
@@ -270,21 +313,167 @@ public final class FallenRocks {
 					pos.set(x, y, z);
 					BlockState state = level.getBlockState(pos);
 
-					if (state.isAir()) {
+					if (state.isAir() || state.is(BlockTags.LEAVES)) {
 						continue;
 					}
 
 					if (!state.getFluidState().isEmpty() || !state.getCollisionShape(level, pos).isEmpty()) {
-						return true;
+						return pos.immutable();
 					}
 				}
 			}
 		}
 
-		return false;
+		return null;
 	}
 
-	/** A rock that cannot be recalled is not generated at all: its blocks are taken out again. */
+	/** The rock's own blocks, relative to the minimum corner of the box. */
+	private static List<Cell> readCells(ServerLevel level, BoundingBox box) {
+		List<Cell> cells = new ArrayList<>();
+		BlockPos.MutableBlockPos pos = new BlockPos.MutableBlockPos();
+
+		for (int x = box.minX(); x <= box.maxX(); x++) {
+			for (int y = box.minY(); y <= box.maxY(); y++) {
+				for (int z = box.minZ(); z <= box.maxZ(); z++) {
+					pos.set(x, y, z);
+					BlockState state = level.getBlockState(pos);
+
+					if (isRockBlock(state)) {
+						cells.add(new Cell(x - box.minX(), y - box.minY(), z - box.minZ(), state));
+					}
+				}
+			}
+		}
+
+		return cells;
+	}
+
+	private static boolean surroundingsLoaded(ServerLevel level, BoundingBox box) {
+		for (int x = (box.minX() - RELOCATE_RADIUS) >> 4; x <= (box.maxX() + RELOCATE_RADIUS) >> 4; x++) {
+			for (int z = (box.minZ() - RELOCATE_RADIUS) >> 4; z <= (box.maxZ() + RELOCATE_RADIUS) >> 4; z++) {
+				if (!level.hasChunkAt(new BlockPos(x << 4, 64, z << 4))) {
+					return false;
+				}
+			}
+		}
+
+		return true;
+	}
+
+	/** Spots within the relocation radius, nearest first (offsets from where the rock was generated). */
+	private static final List<int[]> OFFSETS = new ArrayList<>();
+
+	static {
+		for (int dx = -RELOCATE_RADIUS; dx <= RELOCATE_RADIUS; dx++) {
+			for (int dz = -RELOCATE_RADIUS; dz <= RELOCATE_RADIUS; dz++) {
+				if ((dx != 0 || dz != 0) && dx * dx + dz * dz <= RELOCATE_RADIUS * RELOCATE_RADIUS) {
+					OFFSETS.add(new int[] { dx, dz });
+				}
+			}
+		}
+
+		OFFSETS.sort((a, b) -> Integer.compare(a[0] * a[0] + a[1] * a[1], b[0] * b[0] + b[1] * b[1]));
+	}
+
+	/** A rock that has something above it: moved to the nearest spot with a clear way up, or removed when there is none. */
+	private static void coverRock(ServerLevel level, BoundingBox box, BlockPos blocker) {
+		List<Cell> cells = readCells(level, box);
+		String blockedBy = BuiltInRegistries.BLOCK.getKey(level.getBlockState(blocker).getBlock()) + " at " + blocker.toShortString();
+		int width = box.maxX() - box.minX() + 1;
+		int depth = box.maxZ() - box.minZ() + 1;
+		int height = box.maxY() - box.minY() + 1;
+
+		// first only flat ground, then ground that differs by one block
+		for (int maxDiff = 0; maxDiff <= 1; maxDiff++) {
+			for (int[] offset : OFFSETS) {
+				// never overlapping where it was (that would make the old structure box see the new blocks)
+				if (Math.abs(offset[0]) < width && Math.abs(offset[1]) < depth) {
+					continue;
+				}
+
+				int nx = box.minX() + offset[0];
+				int nz = box.minZ() + offset[1];
+				int base = clearSpot(level, nx, nz, width, depth, height, maxDiff, cells);
+
+				if (base == Integer.MIN_VALUE) {
+					continue;
+				}
+
+				removeRock(level, box);
+
+				for (Cell cell : cells) {
+					level.setBlock(new BlockPos(nx + cell.x(), base + cell.y(), nz + cell.z()), cell.state(), SET_FLAGS);
+				}
+
+				SkyIslands.LOGGER.info("Sky Islands: a fallen rock at {} {} {} had {} above it and was moved to {} {} {}",
+						box.minX(), box.minY(), box.minZ(), blockedBy, nx, base, nz);
+				return;
+			}
+		}
+
+		removeRock(level, box);
+		SkyIslands.LOGGER.info("Sky Islands: a fallen rock at {} {} {} had {} above it and no clear spot within {} blocks, so it was removed",
+				box.minX(), box.minY(), box.minZ(), blockedBy, RELOCATE_RADIUS);
+	}
+
+	/**
+	 * The height the bottom of the rock would stand at if it were placed with its minimum corner at (x, z): on solid ground that
+	 * is flat enough, with room for its blocks and nothing above it. Integer.MIN_VALUE when it cannot go there.
+	 */
+	private static int clearSpot(ServerLevel level, int x, int z, int width, int depth, int height, int maxDiff, List<Cell> cells) {
+		int low = Integer.MAX_VALUE;
+		int high = Integer.MIN_VALUE;
+
+		for (int cx = x; cx < x + width; cx++) {
+			for (int cz = z; cz < z + depth; cz++) {
+				if (!level.hasChunkAt(new BlockPos(cx, 64, cz))) {
+					return Integer.MIN_VALUE;
+				}
+
+				int top = level.getHeight(Heightmap.Types.MOTION_BLOCKING_NO_LEAVES, cx, cz);
+				low = Math.min(low, top);
+				high = Math.max(high, top);
+			}
+		}
+
+		if (high - low > maxDiff) {
+			return Integer.MIN_VALUE;
+		}
+
+		for (int cx = x; cx < x + width; cx++) {
+			for (int cz = z; cz < z + depth; cz++) {
+				BlockPos groundPos = new BlockPos(cx, high - 1, cz);
+				BlockState ground = level.getBlockState(groundPos);
+
+				if (level.getHeight(Heightmap.Types.MOTION_BLOCKING_NO_LEAVES, cx, cz) < high) {
+					// a column one block lower than the rest (only allowed in the second pass): the rock hangs a block above it
+					continue;
+				}
+
+				if (!ground.getFluidState().isEmpty() || ground.is(BlockTags.LEAVES) || ground.is(BlockTags.LOGS)
+						|| !ground.isFaceSturdy(level, groundPos, Direction.UP)) {
+					return Integer.MIN_VALUE;
+				}
+			}
+		}
+
+		for (Cell cell : cells) {
+			BlockPos pos = new BlockPos(x + cell.x(), high + cell.y(), z + cell.z());
+			BlockState state = level.getBlockState(pos);
+
+			if (!state.getFluidState().isEmpty() || !(state.isAir() || state.is(BlockTags.LEAVES) || state.canBeReplaced())) {
+				return Integer.MIN_VALUE;
+			}
+		}
+
+		if (findBlocker(level, new BoundingBox(x, high, z, x + width - 1, high + height - 1, z + depth - 1)) != null) {
+			return Integer.MIN_VALUE;
+		}
+
+		return high;
+	}
+
+	/** A rock that cannot be launched and has nowhere to go: its blocks are taken out again. */
 	private static void removeRock(ServerLevel level, BoundingBox box) {
 		BlockPos.MutableBlockPos pos = new BlockPos.MutableBlockPos();
 
@@ -301,7 +490,7 @@ public final class FallenRocks {
 		}
 	}
 
-	// ---------------------------------------------------------------- standing on a rock
+	// ---------------------------------------------------------------- recognising a rock
 
 	private static boolean isRockBlock(BlockState state) {
 		return state.is(Blocks.DEEPSLATE) || state.is(Blocks.COBBLED_DEEPSLATE) || state.is(Blocks.CHISELED_TUFF)
@@ -350,6 +539,7 @@ public final class FallenRocks {
 		List<Cell> cells = new ArrayList<>();
 		Set<Long> taken = new HashSet<>();
 		int rockBlocks = 0;
+		boolean hasTuff = false;
 		BlockPos.MutableBlockPos pos = new BlockPos.MutableBlockPos();
 
 		// the rock's own blocks (only these: the ground around and under it is never carried)
@@ -361,6 +551,7 @@ public final class FallenRocks {
 
 					if (isRockBlock(state)) {
 						rockBlocks++;
+						hasTuff |= state.is(Blocks.CHISELED_TUFF);
 						cells.add(new Cell(x - box.minX(), y - box.minY(), z - box.minZ(), state));
 						taken.add(pos.asLong());
 					}
@@ -393,98 +584,268 @@ public final class FallenRocks {
 			taken.add(pos.asLong());
 		}
 
-		if (rockBlocks != expected) {
+		// all four rocks have a chiseled tuff block: a pile of plain deepslate somebody built is not a rock
+		if (rockBlocks != expected || !hasTuff) {
 			DEAD.add(key);
 			return null;
 		}
 
-		if (obstructed(level, box)) {
+		if (findBlocker(level, box) != null) {
 			return null;
 		}
 
 		return new Rock(level, box, key, cells);
 	}
 
-	private static void scanPlayers(MinecraftServer server, int now) {
-		Set<UUID> onRock = new HashSet<>();
+	// ---------------------------------------------------------------- finding a rock, looking at it, launching it
 
-		for (ServerPlayer player : server.getPlayerList().getPlayers()) {
-			if (!(player.level() instanceof ServerLevel level) || !Level.OVERWORLD.equals(level.dimension())
-					|| player.isSpectator() || !player.isAlive() || !player.onGround() || player.getY() > TARGET_Y - 20) {
-				continue;
-			}
+	/** The box of the rock the given block belongs to: from its structure, or (a moved rock) from its blocks. Null if none. */
+	private static BoundingBox locate(ServerLevel level, BlockPos pos) {
+		StructureStart start = level.structureManager().getStructureWithPieceAt(pos, ROCKS);
 
-			BlockPos below = BlockPos.containing(player.getX(), player.getY() - 0.01, player.getZ());
+		if (start.isValid()) {
+			return start.getBoundingBox();
+		}
 
-			if (!isRockBlock(level.getBlockState(below))) {
-				continue;
-			}
+		// a rock that was moved at generation no longer lies in its structure: find it as a loose group of rock blocks
+		Set<Long> seen = new HashSet<>();
+		ArrayDeque<BlockPos> queue = new ArrayDeque<>();
+		seen.add(pos.asLong());
+		queue.add(pos);
+		int minX = pos.getX();
+		int minY = pos.getY();
+		int minZ = pos.getZ();
+		int maxX = minX;
+		int maxY = minY;
+		int maxZ = minZ;
 
-			StructureStart start = level.structureManager().getStructureWithPieceAt(below, ROCKS);
+		while (!queue.isEmpty()) {
+			BlockPos p = queue.poll();
+			minX = Math.min(minX, p.getX());
+			minY = Math.min(minY, p.getY());
+			minZ = Math.min(minZ, p.getZ());
+			maxX = Math.max(maxX, p.getX());
+			maxY = Math.max(maxY, p.getY());
+			maxZ = Math.max(maxZ, p.getZ());
 
-			if (!start.isValid()) {
-				continue;
-			}
+			for (int dx = -1; dx <= 1; dx++) {
+				for (int dy = -1; dy <= 1; dy++) {
+					for (int dz = -1; dz <= 1; dz++) {
+						if (dx == 0 && dy == 0 && dz == 0) {
+							continue;
+						}
 
-			BoundingBox box = start.getBoundingBox();
-			long key = BlockPos.asLong(box.minX(), box.minY(), box.minZ());
+						BlockPos n = p.offset(dx, dy, dz);
 
-			if (ACTIVE.containsKey(key) || COOLDOWN.getOrDefault(key, 0) > now) {
-				continue;
-			}
+						if (seen.contains(n.asLong()) || !level.hasChunkAt(n) || !isRockBlock(level.getBlockState(n))) {
+							continue;
+						}
 
-			UUID id = player.getUUID();
-			onRock.add(id);
-			Pending pending = PENDING.get(id);
+						if (seen.size() >= MAX_ROCK_BLOCKS) {
+							return null;
+						}
 
-			if (pending == null || pending.key != key) {
-				pending = new Pending(key, evaluate(level, box, key));
-				PENDING.put(id, pending);
-			}
-
-			if (pending.rock == null) {
-				continue;
-			}
-
-			pending.ticks++;
-
-			if (pending.ticks == 1 || pending.ticks == 8 || pending.ticks == 15) {
-				command(level, String.format(Locale.ROOT, "playsound minecraft:block.deepslate.hit block @a %.1f %.1f %.1f 1.5 0.5",
-						player.getX(), player.getY(), player.getZ()));
-				command(level, String.format(Locale.ROOT, "particle minecraft:poof %.2f %.2f %.2f 0.6 0.1 0.6 0.01 6",
-						player.getX(), player.getY(), player.getZ()));
-			}
-
-			if (pending.ticks >= STAND_TICKS) {
-				PENDING.remove(id);
-				start(level, player, box, key);
+						seen.add(n.asLong());
+						queue.add(n);
+					}
+				}
 			}
 		}
 
-		PENDING.keySet().retainAll(onRock);
+		return new BoundingBox(minX, minY, minZ, maxX, maxY, maxZ);
 	}
 
-	private static void start(ServerLevel level, ServerPlayer player, BoundingBox box, long key) {
-		// looked at again: the rock may have changed during the second the player stood there
-		Rock rock = evaluate(level, box, key);
+	/** True while the block is part of a rock that is up in the air (such a rock is never found again as a new one). */
+	private static boolean isMoving(BlockPos pos) {
+		for (Rock rock : ACTIVE.values()) {
+			if (rock.dy > 0 && pos.getX() >= rock.box.minX() && pos.getX() <= rock.box.maxX()
+					&& pos.getZ() >= rock.box.minZ() && pos.getZ() <= rock.box.maxZ()
+					&& pos.getY() >= rock.box.minY() + rock.dy && pos.getY() <= rock.box.maxY() + rock.dy + 1) {
+				return true;
+			}
+		}
 
-		if (rock == null) {
+		return false;
+	}
+
+	/** The rock this block belongs to if the player may launch it right now (in reach, whole, clear way up, not cooling down). */
+	private static Rock readyRock(ServerLevel level, ServerPlayer player, BlockPos pos, int now) {
+		if (!Level.OVERWORLD.equals(level.dimension()) || player.isSpectator() || !player.isAlive() || player.getY() > TARGET_Y - 20) {
+			return null;
+		}
+
+		if (player.getEyePosition().distanceToSqr(pos.getX() + 0.5, pos.getY() + 0.5, pos.getZ() + 0.5) > HOVER_MAX_RANGE * HOVER_MAX_RANGE) {
+			return null;
+		}
+
+		if (!level.hasChunkAt(pos) || !isRockBlock(level.getBlockState(pos)) || isMoving(pos)) {
+			return null;
+		}
+
+		BoundingBox box = locate(level, pos);
+
+		if (box == null) {
+			return null;
+		}
+
+		long key = BlockPos.asLong(box.minX(), box.minY(), box.minZ());
+
+		if (ACTIVE.containsKey(key) || COOLDOWN.getOrDefault(key, 0) > now) {
+			return null;
+		}
+
+		return evaluate(level, box, key);
+	}
+
+	private static long[] rockBlocks(Rock rock) {
+		List<Long> list = new ArrayList<>();
+
+		for (Cell cell : rock.cells) {
+			if (isRockBlock(cell.state())) {
+				list.add(BlockPos.asLong(rock.box.minX() + cell.x(), rock.box.minY() + cell.y(), rock.box.minZ() + cell.z()));
+			}
+		}
+
+		long[] result = new long[list.size()];
+
+		for (int i = 0; i < result.length; i++) {
+			result[i] = list.get(i);
+		}
+
+		Arrays.sort(result);
+		return result;
+	}
+
+	private static void onHover(ServerPlayer player, RockHoverPayload payload) {
+		UUID id = player.getUUID();
+
+		if (!payload.has()) {
+			Hover hover = HOVER.remove(id);
+
+			if (hover != null && hover.sent.length > 0) {
+				sendHighlight(player, NONE);
+			}
+
 			return;
 		}
 
+		Hover hover = HOVER.computeIfAbsent(id, k -> new Hover());
+
+		if (hover.pos != payload.pos()) {
+			hover.pos = payload.pos();
+			hover.next = 0;
+		}
+	}
+
+	private static void sendHighlight(ServerPlayer player, long[] blocks) {
+		List<Long> list = new ArrayList<>(blocks.length);
+
+		for (long block : blocks) {
+			list.add(block);
+		}
+
+		ServerPlayNetworking.send(player, new RockHighlightPayload(list));
+	}
+
+	/** Tells each player who is looking at a rock whether it is ready (outline on) or not (outline off), when that changes. */
+	private static void updateHover(MinecraftServer server, int now) {
+		Iterator<Map.Entry<UUID, Hover>> it = HOVER.entrySet().iterator();
+
+		while (it.hasNext()) {
+			Map.Entry<UUID, Hover> entry = it.next();
+			ServerPlayer player = server.getPlayerList().getPlayer(entry.getKey());
+
+			if (player == null) {
+				it.remove();
+				continue;
+			}
+
+			Hover hover = entry.getValue();
+
+			if (hover.next > now) {
+				continue;
+			}
+
+			hover.next = now + HOVER_CHECK_TICKS;
+			long[] blocks = NONE;
+
+			if (player.level() instanceof ServerLevel level) {
+				Rock rock = readyRock(level, player, BlockPos.of(hover.pos), now);
+
+				if (rock != null) {
+					blocks = rockBlocks(rock);
+				}
+			}
+
+			if (!Arrays.equals(blocks, hover.sent)) {
+				hover.sent = blocks;
+				sendHighlight(player, blocks);
+			}
+		}
+	}
+
+	/** Right click on a ready rock launches it (the click is used up, so no block is placed against the rock). */
+	private static InteractionResult onUseBlock(Player player, Level world, InteractionHand hand, BlockHitResult hit) {
+		if (disabled || hand != InteractionHand.MAIN_HAND || !(world instanceof ServerLevel level) || !(player instanceof ServerPlayer serverPlayer)) {
+			return InteractionResult.PASS;
+		}
+
+		int now = level.getServer().getTickCount();
+		Rock rock = readyRock(level, serverPlayer, hit.getBlockPos(), now);
+
+		if (rock == null || !start(level, serverPlayer, rock)) {
+			return InteractionResult.PASS;
+		}
+
+		Hover hover = HOVER.get(player.getUUID());
+
+		if (hover != null) {
+			// the outline goes away at once
+			hover.next = 0;
+		}
+
+		return InteractionResult.SUCCESS;
+	}
+
+	private static boolean start(ServerLevel level, ServerPlayer player, Rock rock) {
 		rock.driver = player.getUUID();
-		rock.startFeet = player.getY();
+		// on the rock: the lift starts from the player's feet; beside it: from the top of the rock
+		rock.startFeet = carried(rock).contains(player) ? player.getY() : rock.box.maxY() + 1.0;
 		rock.total = TARGET_Y - (int) Math.floor(rock.startFeet + 1.0E-4);
 
 		if (rock.total < 10) {
-			return;
+			return false;
 		}
 
-		ACTIVE.put(key, rock);
+		ACTIVE.put(rock.key, rock);
+		// whatever leaves hang over the rock are gone before it rises into them
+		clearLeaves(level, rock.box, rock.box.maxY() + 1, TARGET_Y + (rock.box.maxY() - rock.box.minY() + 1) + CLEARANCE_ABOVE_TARGET);
 		command(level, String.format(Locale.ROOT, "playsound minecraft:block.deepslate.break block @a %.1f %.1f %.1f 3.0 0.5",
 				player.getX(), player.getY(), player.getZ()));
 		command(level, String.format(Locale.ROOT, "playsound minecraft:entity.wind_charge.wind_burst block @a %.1f %.1f %.1f 2.0 0.6",
 				player.getX(), player.getY(), player.getZ()));
+		return true;
+	}
+
+	/** Breaks every leaf block in the rock's columns (and the ring of blocks around them) between the two heights. */
+	private static void clearLeaves(ServerLevel level, BoundingBox box, int fromY, int toY) {
+		BlockPos.MutableBlockPos pos = new BlockPos.MutableBlockPos();
+
+		for (int x = box.minX() - LEAF_MARGIN; x <= box.maxX() + LEAF_MARGIN; x++) {
+			for (int z = box.minZ() - LEAF_MARGIN; z <= box.maxZ() + LEAF_MARGIN; z++) {
+				if (!level.hasChunkAt(pos.set(x, 64, z))) {
+					continue;
+				}
+
+				for (int y = fromY; y <= toY; y++) {
+					pos.set(x, y, z);
+
+					if (level.getBlockState(pos).is(BlockTags.LEAVES)) {
+						level.destroyBlock(pos.immutable(), LEAF_DROPS);
+					}
+				}
+			}
+		}
 	}
 
 	// ---------------------------------------------------------------- the rock in motion
@@ -546,6 +907,8 @@ public final class FallenRocks {
 				}
 
 				if (rock.timer >= HOVER_TICKS) {
+					// leaves that have appeared in the way down are broken before the rock drops
+					clearLeaves(rock.level, rock.box, rock.box.minY(), rock.box.maxY() + rock.dy + 1);
 					rock.phase = Phase.FALLING;
 					rock.fallDistance = 0.0;
 					rock.fallSpeed = 0.0;
@@ -669,6 +1032,9 @@ public final class FallenRocks {
 	private static void shift(Rock rock, int newDy) {
 		ServerLevel level = rock.level;
 		BlockState air = Blocks.AIR.defaultBlockState();
+
+		// leaves in the way (above when rising, below when falling) are broken as the rock moves through them
+		clearLeaves(level, rock.box, rock.box.minY() + Math.min(rock.dy, newDy), rock.box.maxY() + Math.max(rock.dy, newDy) + 1);
 
 		for (Cell cell : rock.cells) {
 			level.setBlock(new BlockPos(rock.box.minX() + cell.x(), rock.box.minY() + rock.dy + cell.y(), rock.box.minZ() + cell.z()), air, SET_FLAGS);
