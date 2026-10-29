@@ -1060,7 +1060,7 @@ public final class FallenRocks {
 
 				if (rock.timer >= HOVER_TICKS - 40 && rock.timer % 10 == 0) {
 					command(rock.level, String.format(Locale.ROOT, "playsound minecraft:block.deepslate.hit block @a %.1f %.1f %.1f 3.0 0.6",
-							cx, rock.box.minY() + rock.dy, cz));
+							cx, (double) (rock.box.minY() + rock.dy), cz));
 				}
 
 				if (rock.timer >= HOVER_TICKS) {
@@ -1117,7 +1117,7 @@ public final class FallenRocks {
 			}
 
 			command(rock.level, String.format(Locale.ROOT, "playsound minecraft:block.deepslate.break block @a %.1f %.1f %.1f 3.0 0.8",
-					cx, rock.box.minY() + rock.dy, cz));
+					cx, (double) (rock.box.minY() + rock.dy), cz));
 			rock.phase = Phase.HOVER;
 			rock.timer = 0;
 			return;
@@ -1154,7 +1154,7 @@ public final class FallenRocks {
 
 		if (rock.age % 12 == 0) {
 			command(rock.level, String.format(Locale.ROOT, "playsound minecraft:block.deepslate.hit block @a %.1f %.1f %.1f 2.0 0.5",
-					cx, rock.box.minY() + rock.dy, cz));
+					cx, (double) (rock.box.minY() + rock.dy), cz));
 		}
 	}
 

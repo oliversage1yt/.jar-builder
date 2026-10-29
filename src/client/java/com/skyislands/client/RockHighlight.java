@@ -1,6 +1,7 @@
 package com.skyislands.client;
 
 import java.lang.reflect.Method;
+import java.util.Locale;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
@@ -21,6 +22,7 @@ import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.phys.BlockHitResult;
 import net.minecraft.world.phys.HitResult;
 import net.minecraft.world.phys.Vec3;
+import net.minecraft.world.phys.shapes.VoxelShape;
 
 import com.skyislands.RockHighlightPayload;
 import com.skyislands.RockHoverPayload;
@@ -48,7 +50,10 @@ final class RockHighlight {
 	private record Edge(int axis, int x, int y, int z) { }
 
 	private static Set<Long> blocks = Set.of();
-	private static List<Edge> edges = List.of();
+	/** One line of the outline: the exact shape of each block (stairs and slabs included). */
+	private record Seg(double x0, double y0, double z0, double x1, double y1, double z1, Edge lattice, double cx, double cy, double cz) { }
+
+	private static List<Seg> segs = List.of();
 
 	private static boolean sentHas;
 	private static long sentPos;
@@ -56,6 +61,14 @@ final class RockHighlight {
 	private static Method fillMethod;
 	private static Method partialTickMethod;
 	private static boolean resolved;
+	private static boolean camResolved;
+	private static boolean camOk;
+	private static Object gameRenderer;
+	private static Method cameraGetter;
+	private static Method camPos;
+	private static Method camYaw;
+	private static Method camPitch;
+	private static Method fovMethod;
 	private static boolean failed;
 
 	private RockHighlight() { }
@@ -75,7 +88,7 @@ final class RockHighlight {
 
 	private static void set(List<Long> list) {
 		blocks = list.isEmpty() ? Set.of() : new HashSet<>(list);
-		edges = buildEdges(blocks);
+		segs = buildSegs(blocks);
 	}
 
 	private static void clear() {
@@ -121,44 +134,71 @@ final class RockHighlight {
 
 	// ---------------------------------------------------------------- the outline
 
-	/** The edges that outline the whole pile: not the ones inside a flat face, only those where the surface turns a corner. */
-	private static List<Edge> buildEdges(Set<Long> set) {
-		Set<Edge> candidates = new HashSet<>();
+	/** Whether the surface of the pile turns a corner at this unit edge (a flat face or the inside of the pile has no line). */
+	private static boolean cornerEdge(Set<Long> set, Edge e) {
+		int count = 0;
+		boolean[][] occupied = new boolean[2][2];
 
-		for (long packed : set) {
-			BlockPos b = BlockPos.of(packed);
+		for (int i = 0; i < 2; i++) {
+			for (int j = 0; j < 2; j++) {
+				occupied[i][j] = set.contains(cell(e, i - 1, j - 1));
 
-			for (int u = 0; u <= 1; u++) {
-				for (int v = 0; v <= 1; v++) {
-					candidates.add(new Edge(0, b.getX(), b.getY() + u, b.getZ() + v));
-					candidates.add(new Edge(1, b.getX() + u, b.getY(), b.getZ() + v));
-					candidates.add(new Edge(2, b.getX() + u, b.getY() + v, b.getZ()));
+				if (occupied[i][j]) {
+					count++;
 				}
 			}
 		}
 
-		List<Edge> result = new ArrayList<>();
+		boolean diagonal = (occupied[0][0] && occupied[1][1] && !occupied[0][1] && !occupied[1][0])
+				|| (occupied[0][1] && occupied[1][0] && !occupied[0][0] && !occupied[1][1]);
+		return count == 1 || count == 3 || diagonal;
+	}
 
-		for (Edge e : candidates) {
-			int count = 0;
-			boolean[][] occupied = new boolean[2][2];
+	private static boolean nearInt(double v) {
+		return Math.abs(v - Math.rint(v)) < 1.0E-4;
+	}
 
-			for (int i = 0; i < 2; i++) {
-				for (int j = 0; j < 2; j++) {
-					occupied[i][j] = set.contains(cell(e, i - 1, j - 1));
+	/** The lines of every block's real shape; the ones on the edges of the cube grid only where the pile has a corner. */
+	private static List<Seg> buildSegs(Set<Long> set) {
+		List<Seg> result = new ArrayList<>();
+		Set<String> seen = new HashSet<>();
+		ClientLevel level = Minecraft.getInstance().level;
 
-					if (occupied[i][j]) {
-						count++;
+		for (long packed : set) {
+			BlockPos pos = BlockPos.of(packed);
+			VoxelShape shape = level == null ? net.minecraft.world.phys.shapes.Shapes.block() : level.getBlockState(pos).getShape(level, pos);
+
+			shape.forAllEdges((x0, y0, z0, x1, y1, z1) -> {
+				double ax = x0 + pos.getX();
+				double ay = y0 + pos.getY();
+				double az = z0 + pos.getZ();
+				double bx = x1 + pos.getX();
+				double by = y1 + pos.getY();
+				double bz = z1 + pos.getZ();
+				String key = ax <= bx && (ax != bx || (ay <= by && (ay != by || az <= bz)))
+						? String.format(Locale.ROOT, "%d,%d,%d,%d,%d,%d", Math.round(ax * 64), Math.round(ay * 64), Math.round(az * 64), Math.round(bx * 64), Math.round(by * 64), Math.round(bz * 64))
+						: String.format(Locale.ROOT, "%d,%d,%d,%d,%d,%d", Math.round(bx * 64), Math.round(by * 64), Math.round(bz * 64), Math.round(ax * 64), Math.round(ay * 64), Math.round(az * 64));
+
+				if (!seen.add(key)) {
+					return;
+				}
+
+				int axis = Math.abs(bx - ax) > 1.0E-6 ? 0 : (Math.abs(by - ay) > 1.0E-6 ? 1 : 2);
+				boolean onGrid = axis == 0 ? nearInt(ay) && nearInt(az) : axis == 1 ? nearInt(ax) && nearInt(az) : nearInt(ax) && nearInt(ay);
+				Edge lattice = null;
+
+				if (onGrid) {
+					double lo = axis == 0 ? Math.min(ax, bx) : axis == 1 ? Math.min(ay, by) : Math.min(az, bz);
+					lattice = new Edge(axis, (int) (axis == 0 ? Math.floor(lo + 1.0E-4) : Math.rint(ax)), (int) (axis == 1 ? Math.floor(lo + 1.0E-4) : Math.rint(ay)),
+							(int) (axis == 2 ? Math.floor(lo + 1.0E-4) : Math.rint(az)));
+
+					if (!cornerEdge(set, lattice)) {
+						return;
 					}
 				}
-			}
 
-			boolean diagonal = (occupied[0][0] && occupied[1][1] && !occupied[0][1] && !occupied[1][0])
-					|| (occupied[0][1] && occupied[1][0] && !occupied[0][0] && !occupied[1][1]);
-
-			if (count == 1 || count == 3 || diagonal) {
-				result.add(e);
-			}
+				result.add(new Seg(ax, ay, az, bx, by, bz, lattice, pos.getX() + 0.5, pos.getY() + 0.5, pos.getZ() + 0.5));
+			});
 		}
 
 		return result;
@@ -225,8 +265,7 @@ final class RockHighlight {
 			Minecraft mc = Minecraft.getInstance();
 			LocalPlayer player = mc.player;
 
-			// fast movement widens the field of view, which this drawing does not follow: no outline then
-			if (player == null || mc.level == null || player.isSprinting() || player.isFallFlying() || !firstPerson(mc)) {
+			if (player == null || mc.level == null) {
 				return;
 			}
 
@@ -236,6 +275,10 @@ final class RockHighlight {
 
 			if (failed) {
 				return;
+			}
+
+			if (!camResolved) {
+				resolveCamera(mc);
 			}
 
 			float partial = 1.0F;
@@ -249,9 +292,47 @@ final class RockHighlight {
 				}
 			}
 
-			Vec3 eye = player.getEyePosition(partial);
-			double yaw = Math.toRadians(player.getViewYRot(partial));
-			double pitch = Math.toRadians(player.getViewXRot(partial));
+			Vec3 eye;
+			double yawDeg;
+			double pitchDeg;
+			double fovDeg;
+			boolean exact = false;
+
+			if (camOk) {
+				// the game's own camera: it follows crouching smoothly, third person, and so on
+				Object cam = cameraGetter.invoke(gameRenderer);
+				eye = (Vec3) camPos.invoke(cam);
+				yawDeg = ((Number) camYaw.invoke(cam)).doubleValue();
+				pitchDeg = ((Number) camPitch.invoke(cam)).doubleValue();
+				fovDeg = mc.options.fov().get();
+
+				if (fovMethod != null) {
+					try {
+						// the field of view the game itself draws with (sprinting, speed, being under water, ...)
+						fovDeg = ((Number) fovMethod.invoke(gameRenderer, cam, partial, Boolean.TRUE)).doubleValue();
+						exact = true;
+					} catch (ReflectiveOperationException | RuntimeException ex) {
+						fovMethod = null;
+					}
+				}
+			} else {
+				if (!firstPerson(mc)) {
+					return;
+				}
+
+				eye = player.getEyePosition(partial);
+				yawDeg = player.getViewYRot(partial);
+				pitchDeg = player.getViewXRot(partial);
+				fovDeg = mc.options.fov().get();
+			}
+
+			// without the game's own field of view the outline would be off while it changes: no outline then
+			if (!exact && (player.isSprinting() || player.isFallFlying() || player.isUnderWater())) {
+				return;
+			}
+
+			double yaw = Math.toRadians(yawDeg);
+			double pitch = Math.toRadians(pitchDeg);
 			double cosP = Math.cos(pitch);
 			double[] f = { -Math.sin(yaw) * cosP, -Math.sin(pitch), Math.cos(yaw) * cosP };
 			double[] r = { -Math.cos(yaw), 0.0, -Math.sin(yaw) };
@@ -259,20 +340,28 @@ final class RockHighlight {
 
 			int width = mc.getWindow().getGuiScaledWidth();
 			int height = mc.getWindow().getGuiScaledHeight();
-			double tanHalf = Math.tan(Math.toRadians(mc.options.fov().get()) / 2.0);
+			double tanHalf = Math.tan(Math.toRadians(fovDeg) / 2.0);
 			double aspect = width / (double) height;
 			int thickness = (int) Math.max(1, Math.round(LINE_PIXELS / Math.max(1.0, mc.getWindow().getGuiScale())));
 
-			for (Edge e : edges) {
-				if (!facesCamera(e, eye)) {
-					continue;
+			for (Seg seg : segs) {
+				if (seg.lattice() != null) {
+					if (!facesCamera(seg.lattice(), eye)) {
+						continue;
+					}
+				} else {
+					// a line on a stair or slab that is not on the cube grid: only the ones on the side turned to the eye
+					double mx = (seg.x0() + seg.x1()) / 2.0;
+					double my = (seg.y0() + seg.y1()) / 2.0;
+					double mz = (seg.z0() + seg.z1()) / 2.0;
+
+					if ((eye.x - mx) * (mx - seg.cx()) + (eye.y - my) * (my - seg.cy()) + (eye.z - mz) * (mz - seg.cz()) < -0.02) {
+						continue;
+					}
 				}
 
-				double[] p0 = { e.x(), e.y(), e.z() };
-				double[] p1 = { e.x(), e.y(), e.z() };
-				p1[e.axis()] += 1.0;
-				double[] c0 = toCamera(p0, eye, f, r, u);
-				double[] c1 = toCamera(p1, eye, f, r, u);
+				double[] c0 = toCamera(new double[] { seg.x0(), seg.y0(), seg.z0() }, eye, f, r, u);
+				double[] c1 = toCamera(new double[] { seg.x1(), seg.y1(), seg.z1() }, eye, f, r, u);
 
 				// cut the part behind the camera off
 				if (c0[2] < NEAR && c1[2] < NEAR) {
@@ -408,6 +497,53 @@ final class RockHighlight {
 		} catch (Throwable ex) {
 			return true;
 		}
+	}
+
+	private static Method find(Class<?> type, String... names) {
+		for (String name : names) {
+			for (Method m : type.getMethods()) {
+				if (m.getName().equals(name) && m.getParameterCount() == 0) {
+					return m;
+				}
+			}
+		}
+
+		return null;
+	}
+
+	/** The game's camera and the field of view it draws with, found by name (any that is missing falls back to the player). */
+	private static void resolveCamera(Minecraft mc) {
+		camResolved = true;
+
+		try {
+			gameRenderer = Minecraft.class.getField("gameRenderer").get(mc);
+			cameraGetter = find(gameRenderer.getClass(), "getMainCamera");
+			Object cam = cameraGetter == null ? null : cameraGetter.invoke(gameRenderer);
+
+			if (cam != null) {
+				camPos = find(cam.getClass(), "position", "getPosition");
+				camYaw = find(cam.getClass(), "getYRot", "yRot", "getYaw");
+				camPitch = find(cam.getClass(), "getXRot", "xRot", "getPitch");
+				camOk = camPos != null && camYaw != null && camPitch != null && camPos.getReturnType() == Vec3.class;
+			}
+
+			for (Method m : gameRenderer.getClass().getDeclaredMethods()) {
+				Class<?>[] p = m.getParameterTypes();
+
+				if (m.getName().equals("getFov") && p.length == 3 && p[1] == float.class && p[2] == boolean.class && Number.class.isAssignableFrom(boxed(m.getReturnType()))) {
+					m.setAccessible(true);
+					fovMethod = m;
+				}
+			}
+		} catch (Throwable ex) {
+			camOk = false;
+		}
+
+		SkyIslands.LOGGER.info("Sky Islands: fallen rock outline uses {} camera and {} field of view", camOk ? "the game's" : "the player's", fovMethod != null ? "the game's" : "the option's");
+	}
+
+	private static Class<?> boxed(Class<?> c) {
+		return c == float.class ? Float.class : c == double.class ? Double.class : c == int.class ? Integer.class : c;
 	}
 
 	private static void resolve(Object g, Object tickCounter) {
