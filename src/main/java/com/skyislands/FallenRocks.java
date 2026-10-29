@@ -42,6 +42,7 @@ import net.minecraft.world.level.chunk.LevelChunk;
 import net.minecraft.world.level.levelgen.Heightmap;
 import net.minecraft.world.level.levelgen.structure.BoundingBox;
 import net.minecraft.world.level.levelgen.structure.Structure;
+import net.minecraft.world.level.levelgen.structure.StructurePiece;
 import net.minecraft.world.level.levelgen.structure.StructureStart;
 import net.minecraft.world.phys.BlockHitResult;
 
@@ -249,27 +250,37 @@ public final class FallenRocks {
 					continue;
 				}
 
-				BoundingBox box = start.getBoundingBox();
-				BlockPos center = new BlockPos((box.minX() + box.maxX()) / 2, (box.minY() + box.maxY()) / 2, (box.minZ() + box.maxZ()) / 2);
-				StructureStart found = level.structureManager().getStructureWithPieceAt(center, ROCKS);
+				// The start's own bounding box is inflated by terrain adaptation (about 12 blocks all round): the boxes
+				// of its pieces are the real size of the rock.
+				BoundingBox pieces = pieceBox(start);
 
-				if (!found.isValid() || !sameBox(found.getBoundingBox(), box)) {
+				if (pieces == null) {
 					continue;
 				}
 
-				if (!columnsLoaded(level, box)) {
+				BlockPos center = new BlockPos((pieces.minX() + pieces.maxX()) / 2, (pieces.minY() + pieces.maxY()) / 2, (pieces.minZ() + pieces.maxZ()) / 2);
+				StructureStart found = level.structureManager().getStructureWithPieceAt(center, ROCKS);
+
+				if (!found.isValid() || pieceBox(found) == null || !sameBox(pieceBox(found), pieces)) {
+					continue;
+				}
+
+				if (!columnsLoaded(level, pieces)) {
 					again = true;
 					continue;
 				}
 
-				BlockPos blocker = findBlocker(level, box);
+				// where the rock really is now (it may already have been moved a block on an earlier try); null: gone
+				BoundingBox box = actualBox(level, pieces);
 
-				if (blocker == null) {
+				if (box == null) {
 					continue;
 				}
 
-				if (readCells(level, box).isEmpty()) {
-					// already moved or removed on an earlier try
+				box = settle(level, box);
+				BlockPos blocker = findBlocker(level, box);
+
+				if (blocker == null) {
 					continue;
 				}
 
@@ -286,6 +297,167 @@ public final class FallenRocks {
 				QUEUE.add(new Generated(level, next.pos, next.tries + 1));
 			}
 		}
+	}
+
+	private static BoundingBox pieceBox(StructureStart start) {
+		BoundingBox result = null;
+
+		for (StructurePiece piece : start.getPieces()) {
+			BoundingBox b = piece.getBoundingBox();
+			result = result == null ? b : new BoundingBox(Math.min(result.minX(), b.minX()), Math.min(result.minY(), b.minY()), Math.min(result.minZ(), b.minZ()),
+					Math.max(result.maxX(), b.maxX()), Math.max(result.maxY(), b.maxY()), Math.max(result.maxZ(), b.maxZ()));
+		}
+
+		return result;
+	}
+
+	/** The box of the rock's blocks (found from them, a couple of blocks above and below the piece box too), or null if none. */
+	private static BoundingBox actualBox(ServerLevel level, BoundingBox pieces) {
+		BlockPos.MutableBlockPos pos = new BlockPos.MutableBlockPos();
+
+		for (int x = pieces.minX(); x <= pieces.maxX(); x++) {
+			for (int y = pieces.minY() - 2; y <= pieces.maxY() + 2; y++) {
+				for (int z = pieces.minZ(); z <= pieces.maxZ(); z++) {
+					pos.set(x, y, z);
+
+					if (isRockBlock(level.getBlockState(pos))) {
+						return floodBox(level, pos.immutable());
+					}
+				}
+			}
+		}
+
+		return null;
+	}
+
+	/** Natural ground that something can stand on (not rock blocks, leaves, logs, fluid). */
+	private static boolean isGround(ServerLevel level, BlockPos pos) {
+		BlockState state = level.getBlockState(pos);
+		return !state.isAir() && state.getFluidState().isEmpty() && !state.is(BlockTags.LEAVES) && !state.is(BlockTags.LOGS)
+				&& !isRockBlock(state) && state.isFaceSturdy(level, pos, Direction.UP);
+	}
+
+	private static final Direction[] SIDES = { Direction.NORTH, Direction.SOUTH, Direction.EAST, Direction.WEST };
+
+	/** True when the bottom of the rock is sunk into the ground: most of the blocks next to its bottom layer are ground. */
+	private static boolean isEmbedded(ServerLevel level, BoundingBox box, List<Cell> cells) {
+		Set<Long> own = new HashSet<>();
+
+		for (Cell cell : cells) {
+			own.add(BlockPos.asLong(box.minX() + cell.x(), box.minY() + cell.y(), box.minZ() + cell.z()));
+		}
+
+		int solid = 0;
+		int total = 0;
+
+		for (Cell cell : cells) {
+			if (cell.y() != 0) {
+				continue;
+			}
+
+			BlockPos pos = new BlockPos(box.minX() + cell.x(), box.minY(), box.minZ() + cell.z());
+
+			for (Direction side : SIDES) {
+				BlockPos n = pos.relative(side);
+
+				if (own.contains(n.asLong())) {
+					continue;
+				}
+
+				total++;
+
+				if (isGround(level, n)) {
+					solid++;
+				}
+			}
+		}
+
+		return total > 0 && solid * 2 > total;
+	}
+
+	/** True when no block of the bottom layer has anything solid under it. */
+	private static boolean isFloating(ServerLevel level, BoundingBox box, List<Cell> cells) {
+		for (Cell cell : cells) {
+			if (cell.y() == 0 && isGround(level, new BlockPos(box.minX() + cell.x(), box.minY() - 1, box.minZ() + cell.z()))) {
+				return false;
+			}
+		}
+
+		return true;
+	}
+
+	/** Takes a rock out of the world. A rock that was sunk into the ground leaves ground behind, not a hole. */
+	private static void vacate(ServerLevel level, BoundingBox box, List<Cell> cells) {
+		boolean embedded = isEmbedded(level, box, cells);
+		Set<Long> own = new HashSet<>();
+
+		for (Cell cell : cells) {
+			own.add(BlockPos.asLong(box.minX() + cell.x(), box.minY() + cell.y(), box.minZ() + cell.z()));
+		}
+
+		List<BlockState> fills = new ArrayList<>();
+
+		for (Cell cell : cells) {
+			BlockState fill = Blocks.AIR.defaultBlockState();
+
+			if (embedded) {
+				BlockPos pos = new BlockPos(box.minX() + cell.x(), box.minY() + cell.y(), box.minZ() + cell.z());
+				BlockPos below = pos.below();
+
+				if (cell.y() == 0 && isGround(level, below)) {
+					fill = level.getBlockState(below);
+				} else {
+					for (Direction side : SIDES) {
+						BlockPos n = pos.relative(side);
+
+						if (!own.contains(n.asLong()) && isGround(level, n)) {
+							fill = level.getBlockState(n);
+							break;
+						}
+					}
+				}
+			}
+
+			fills.add(fill);
+		}
+
+		for (int i = 0; i < cells.size(); i++) {
+			Cell cell = cells.get(i);
+			level.setBlock(new BlockPos(box.minX() + cell.x(), box.minY() + cell.y(), box.minZ() + cell.z()), fills.get(i), SET_FLAGS);
+		}
+	}
+
+	/**
+	 * Makes the rock sit on the ground: a rock sunk into it is lifted a block (and the ground it replaced is put back), one
+	 * hanging in the air is lowered. Returns the box the rock is in afterwards.
+	 */
+	private static BoundingBox settle(ServerLevel level, BoundingBox box) {
+		int last = 0;
+
+		for (int i = 0; i < 3; i++) {
+			List<Cell> cells = readCells(level, box);
+
+			if (cells.size() != expectedBlocks(box)) {
+				return box;
+			}
+
+			int dy = isEmbedded(level, box, cells) ? 1 : (isFloating(level, box, cells) ? -1 : 0);
+
+			if (dy == 0 || dy == -last) {
+				return box;
+			}
+
+			vacate(level, box, cells);
+
+			for (Cell cell : cells) {
+				level.setBlock(new BlockPos(box.minX() + cell.x(), box.minY() + dy + cell.y(), box.minZ() + cell.z()), cell.state(), SET_FLAGS);
+			}
+
+			box = new BoundingBox(box.minX(), box.minY() + dy, box.minZ(), box.maxX(), box.maxY() + dy, box.maxZ());
+			last = dy;
+		}
+
+		return box;
 	}
 
 	private static boolean sameBox(BoundingBox a, BoundingBox b) {
@@ -475,19 +647,7 @@ public final class FallenRocks {
 
 	/** A rock that cannot be launched and has nowhere to go: its blocks are taken out again. */
 	private static void removeRock(ServerLevel level, BoundingBox box) {
-		BlockPos.MutableBlockPos pos = new BlockPos.MutableBlockPos();
-
-		for (int x = box.minX(); x <= box.maxX(); x++) {
-			for (int y = box.minY(); y <= box.maxY(); y++) {
-				for (int z = box.minZ(); z <= box.maxZ(); z++) {
-					pos.set(x, y, z);
-
-					if (isRockBlock(level.getBlockState(pos))) {
-						level.setBlock(pos.immutable(), Blocks.AIR.defaultBlockState(), 2);
-					}
-				}
-			}
-		}
+		vacate(level, box, readCells(level, box));
 	}
 
 	// ---------------------------------------------------------------- recognising a rock
@@ -599,15 +759,12 @@ public final class FallenRocks {
 
 	// ---------------------------------------------------------------- finding a rock, looking at it, launching it
 
-	/** The box of the rock the given block belongs to: from its structure, or (a moved rock) from its blocks. Null if none. */
+	/** The box of the rock the given block belongs to, found from its blocks (a rock may have been moved). Null if none. */
 	private static BoundingBox locate(ServerLevel level, BlockPos pos) {
-		StructureStart start = level.structureManager().getStructureWithPieceAt(pos, ROCKS);
+		return floodBox(level, pos);
+	}
 
-		if (start.isValid()) {
-			return start.getBoundingBox();
-		}
-
-		// a rock that was moved at generation no longer lies in its structure: find it as a loose group of rock blocks
+	private static BoundingBox floodBox(ServerLevel level, BlockPos pos) {
 		Set<Long> seen = new HashSet<>();
 		ArrayDeque<BlockPos> queue = new ArrayDeque<>();
 		seen.add(pos.asLong());
