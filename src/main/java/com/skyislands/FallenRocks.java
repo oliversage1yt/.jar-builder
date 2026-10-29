@@ -29,10 +29,14 @@ import net.minecraft.core.registries.Registries;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
+import net.minecraft.resources.Identifier;
 import net.minecraft.tags.BlockTags;
 import net.minecraft.tags.TagKey;
 import net.minecraft.world.InteractionHand;
 import net.minecraft.world.InteractionResult;
+import net.minecraft.world.entity.ai.attributes.AttributeInstance;
+import net.minecraft.world.entity.ai.attributes.AttributeModifier;
+import net.minecraft.world.entity.ai.attributes.Attributes;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.level.ChunkPos;
 import net.minecraft.world.level.Level;
@@ -62,8 +66,8 @@ import net.minecraft.world.phys.BlockHitResult;
  * {@link #RELOCATE_RADIUS} blocks) that has a clear way up, and is only removed when there is no such spot.</li>
  * </ul>
  *
- * <p>The lift itself: the rock follows the rider's height block by block while the rider is held up by a Levitation effect
- * whose strength is eased down towards the top, so there is no hard stop (and no fall damage).
+ * <p>The lift itself: the rock follows the rider's height block by block while the rider is held up by bending their gravity
+ * whose gravity is bent (the attribute the geysers use) so that their speed eases down towards the top, with no hard stop.
  */
 public final class FallenRocks {
 	private static final TagKey<Structure> ROCKS = TagKey.create(Registries.STRUCTURE, SkyIslands.id("fallen_rocks"));
@@ -101,6 +105,12 @@ public final class FallenRocks {
 	/** Sanity limit for the looked-at block (the client only sends blocks in normal reach; vanilla checks the real click). */
 	private static final double HOVER_MAX_RANGE = 7.0;
 	private static final long[] NONE = new long[0];
+	/** The gravity modifier that holds the riders up (the same attribute the geysers use). It is transient: never saved. */
+	private static final Identifier LIFT_ID = SkyIslands.id("rock_lift");
+	/** How much of the gap between a rider's speed and the wanted speed is closed each tick. */
+	private static final double LIFT_GAIN = 0.3;
+	/** The strongest upward pull, as (negative) gravity. */
+	private static final double LIFT_MAX_THRUST = 0.25;
 	private static final int GEN_PER_TICK = 4;
 	private static final int GEN_MAX_TRIES = 200;
 
@@ -123,7 +133,9 @@ public final class FallenRocks {
 		Phase phase = Phase.RISING;
 		int age;
 		int timer;
-		int lastAmp = -1;
+		/** Players held up by the lift (their gravity is bent while on this list), and where they were a tick ago. */
+		final Set<UUID> lifted = new HashSet<>();
+		final Map<UUID, Double> lastY = new HashMap<>();
 		double fallDistance;
 		double fallSpeed;
 
@@ -194,6 +206,7 @@ public final class FallenRocks {
 	private static void restoreAll(MinecraftServer server) {
 		for (Rock rock : ACTIVE.values()) {
 			try {
+				releaseLift(rock);
 				shift(rock, 0);
 			} catch (Throwable t) {
 				SkyIslands.LOGGER.error("Sky Islands: could not put a fallen rock back", t);
@@ -278,6 +291,12 @@ public final class FallenRocks {
 				}
 
 				box = settle(level, box);
+				List<Cell> settled = readCells(level, box);
+
+				if (settled.size() == expectedBlocks(box)) {
+					repairGround(level, box, positionsOf(box, settled), false);
+				}
+
 				BlockPos blocker = findBlocker(level, box);
 
 				if (blocker == null) {
@@ -386,6 +405,55 @@ public final class FallenRocks {
 		return true;
 	}
 
+	/** What to put into an empty spot in the ground: what is next to it, or what is under it. Null when there is nothing fitting. */
+	private static BlockState groundFill(ServerLevel level, BlockPos pos, Set<Long> own) {
+		for (Direction side : SIDES) {
+			BlockPos n = pos.relative(side);
+
+			if (!own.contains(n.asLong()) && isGround(level, n)) {
+				return level.getBlockState(n);
+			}
+		}
+
+		BlockPos below = pos.below();
+		return isGround(level, below) ? level.getBlockState(below) : null;
+	}
+
+	/**
+	 * The rock's structure carves air out of the ground wherever the rock has no block in its bottom layer (the raised ends of
+	 * a rock). Where that left a hole in the ground under the rock (and, for a rock that has just been taken out of the ground,
+	 * in its bottom layer) the ground is put back. Only holes with ground under them are filled, so nothing is left hanging.
+	 */
+	private static void repairGround(ServerLevel level, BoundingBox box, Set<Long> own, boolean includeBottomLayer) {
+		for (int y = box.minY() - 1; y <= (includeBottomLayer ? box.minY() : box.minY() - 1); y++) {
+			for (int x = box.minX(); x <= box.maxX(); x++) {
+				for (int z = box.minZ(); z <= box.maxZ(); z++) {
+					BlockPos pos = new BlockPos(x, y, z);
+
+					if (own.contains(pos.asLong()) || !level.getBlockState(pos).isAir() || !isGround(level, pos.below())) {
+						continue;
+					}
+
+					BlockState fill = groundFill(level, pos, own);
+
+					if (fill != null) {
+						level.setBlock(pos, fill, SET_FLAGS);
+					}
+				}
+			}
+		}
+	}
+
+	private static Set<Long> positionsOf(BoundingBox box, List<Cell> cells) {
+		Set<Long> own = new HashSet<>();
+
+		for (Cell cell : cells) {
+			own.add(BlockPos.asLong(box.minX() + cell.x(), box.minY() + cell.y(), box.minZ() + cell.z()));
+		}
+
+		return own;
+	}
+
 	/** Takes a rock out of the world. A rock that was sunk into the ground leaves ground behind, not a hole. */
 	private static void vacate(ServerLevel level, BoundingBox box, List<Cell> cells) {
 		boolean embedded = isEmbedded(level, box, cells);
@@ -425,6 +493,8 @@ public final class FallenRocks {
 			Cell cell = cells.get(i);
 			level.setBlock(new BlockPos(box.minX() + cell.x(), box.minY() + cell.y(), box.minZ() + cell.z()), fills.get(i), SET_FLAGS);
 		}
+
+		repairGround(level, box, own, embedded);
 	}
 
 	/**
@@ -1022,6 +1092,8 @@ public final class FallenRocks {
 			}
 
 			if (!keep) {
+				releaseLift(rock);
+
 				if (rock.dy != 0) {
 					shift(rock, 0);
 				}
@@ -1109,11 +1181,11 @@ public final class FallenRocks {
 		if (remaining <= 0.0 || rock.age > MAX_RISE_TICKS) {
 			shift(rock, rock.total);
 
+			releaseLift(rock);
+
 			for (ServerPlayer player : carried) {
-				UUID id = player.getUUID();
-				command(rock.level, "effect clear " + id + " minecraft:levitation");
 				// the rider has a little upward speed left when the lift lets go: no fall damage from it
-				command(rock.level, "effect give " + id + " minecraft:slow_falling 3 0 true");
+				command(rock.level, "effect give " + player.getUUID() + " minecraft:slow_falling 3 0 true");
 			}
 
 			command(rock.level, String.format(Locale.ROOT, "playsound minecraft:block.deepslate.break block @a %.1f %.1f %.1f 3.0 0.8",
@@ -1131,21 +1203,22 @@ public final class FallenRocks {
 			shift(rock, want);
 		}
 
-		// Levitation rises towards 0.05 blocks per tick per level
-		int amplifier = Math.max(0, (int) Math.round(speed / 0.05) - 1);
+		// riders that left the rock (stepped off, died, went away) get their gravity back
+		Set<UUID> carriedIds = new HashSet<>();
 
 		for (ServerPlayer player : carried) {
-			UUID id = player.getUUID();
-
-			if (amplifier != rock.lastAmp) {
-				// a weaker effect would not replace a stronger one that is still running
-				command(rock.level, "effect clear " + id + " minecraft:levitation");
-			}
-
-			command(rock.level, "effect give " + id + " minecraft:levitation 1 " + amplifier + " true");
+			carriedIds.add(player.getUUID());
 		}
 
-		rock.lastAmp = amplifier;
+		for (UUID id : new ArrayList<>(rock.lifted)) {
+			if (!carriedIds.contains(id)) {
+				releaseLift(rock, id);
+			}
+		}
+
+		for (ServerPlayer player : carried) {
+			lift(rock, player, speed);
+		}
 
 		if (rock.age % 4 == 0) {
 			double y = rock.box.minY() + rock.dy - 0.3;
@@ -1155,6 +1228,48 @@ public final class FallenRocks {
 		if (rock.age % 12 == 0) {
 			command(rock.level, String.format(Locale.ROOT, "playsound minecraft:block.deepslate.hit block @a %.1f %.1f %.1f 2.0 0.5",
 					cx, (double) (rock.box.minY() + rock.dy), cz));
+		}
+	}
+
+	/**
+	 * Holds a rider up by bending their gravity (like a geyser does): each tick the gravity is set so that their upward speed
+	 * moves towards the wanted speed. Vanilla moves a player by (speed - gravity) * 0.98 each tick, so the gravity that gives a
+	 * wanted next speed is (speed - wanted / 0.98).
+	 */
+	private static void lift(Rock rock, ServerPlayer player, double wantedSpeed) {
+		AttributeInstance gravity = player.getAttribute(Attributes.GRAVITY);
+
+		if (gravity == null) {
+			return;
+		}
+
+		UUID id = player.getUUID();
+		Double before = rock.lastY.put(id, player.getY());
+		double speed = before == null ? 0.0 : player.getY() - before;
+		double next = speed + LIFT_GAIN * (wantedSpeed - speed);
+		double base = gravity.getBaseValue();
+		double total = Math.max(-LIFT_MAX_THRUST, Math.min(base, speed - next / 0.98));
+		gravity.addOrUpdateTransientModifier(new AttributeModifier(LIFT_ID, total - base, AttributeModifier.Operation.ADD_VALUE));
+		rock.lifted.add(id);
+	}
+
+	private static void releaseLift(Rock rock, UUID id) {
+		rock.lifted.remove(id);
+		rock.lastY.remove(id);
+		Player player = rock.level.getPlayerByUUID(id);
+
+		if (player != null) {
+			AttributeInstance gravity = player.getAttribute(Attributes.GRAVITY);
+
+			if (gravity != null) {
+				gravity.removeModifier(LIFT_ID);
+			}
+		}
+	}
+
+	private static void releaseLift(Rock rock) {
+		for (UUID id : new ArrayList<>(rock.lifted)) {
+			releaseLift(rock, id);
 		}
 	}
 

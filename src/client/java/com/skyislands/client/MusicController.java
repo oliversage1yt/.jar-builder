@@ -131,7 +131,10 @@ public final class MusicController {
 		boolean bossBusy = bossPresent || boss != null;
 
 		// ------------------------------------------------------------------ launch song
-		boolean thrust = overworld && player.getAttributeValue(Attributes.GRAVITY) < 0.0;
+		// the fallen rocks hold riders up with negative gravity too, but that is not a geyser launch: no launch song
+		var gravity = player.getAttribute(Attributes.GRAVITY);
+		boolean rockLift = gravity != null && gravity.getModifier(SkyIslands.id("rock_lift")) != null;
+		boolean thrust = overworld && !rockLift && player.getAttributeValue(Attributes.GRAVITY) < 0.0;
 
 		if (launch != null) {
 			launchTicks++;

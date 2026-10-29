@@ -19,7 +19,12 @@ public class FadingSound extends AbstractSoundInstance implements TickableSoundI
 	private int fadeTicksLeft;
 
 	public FadingSound(Identifier sound, float startVolume) {
-		super(sound, SoundSource.MUSIC, SoundInstance.createUnseededRandom());
+		this(sound, SoundSource.MUSIC, startVolume);
+	}
+
+	/** The same, in another category (so another volume slider controls it). */
+	public FadingSound(Identifier sound, SoundSource source, float startVolume) {
+		super(sound, source, SoundInstance.createUnseededRandom());
 		this.soundId = sound;
 		this.volume = startVolume;
 		this.target = startVolume;

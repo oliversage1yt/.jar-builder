@@ -61,5 +61,13 @@
         "name": "sky_islands:ui/recipe_unlock"
       }
     ]
+  },
+  "rock.recall_hover": {
+    "sounds": [
+      {
+        "name": "sky_islands:rock/recall_selected",
+        "stream": true
+      }
+    ]
   }
 }

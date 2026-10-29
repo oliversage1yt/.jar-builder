@@ -1,5 +1,6 @@
 package com.skyislands.client;
 
+import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 import java.util.Locale;
 import java.util.ArrayList;
@@ -15,6 +16,10 @@ import net.minecraft.client.Minecraft;
 import net.minecraft.client.multiplayer.ClientLevel;
 import net.minecraft.client.player.LocalPlayer;
 import net.minecraft.core.BlockPos;
+import net.minecraft.util.Mth;
+import net.minecraft.resources.Identifier;
+import net.minecraft.sounds.SoundSource;
+import net.minecraft.tags.FluidTags;
 import net.minecraft.world.InteractionHand;
 import net.minecraft.world.InteractionResult;
 import net.minecraft.world.level.block.Blocks;
@@ -55,6 +60,16 @@ final class RockHighlight {
 
 	private static List<Seg> segs = List.of();
 
+	private static final Identifier HUM = SkyIslands.id("rock.recall_hover");
+	private static final float HUM_VOLUME = 0.7F;
+	private static final int HUM_FADE_IN = 10;
+	/** The sound fades out within this many ticks (1 second) when the rock is launched or the player looks away. */
+	private static final int HUM_FADE_OUT = 20;
+
+	private static FadingSound hum;
+	private static boolean humFading;
+	private static int humTicks;
+
 	private static boolean sentHas;
 	private static long sentPos;
 
@@ -69,6 +84,8 @@ final class RockHighlight {
 	private static Method camYaw;
 	private static Method camPitch;
 	private static Method fovMethod;
+	private static Field fovNow;
+	private static Field fovOld;
 	private static boolean failed;
 
 	private RockHighlight() { }
@@ -79,6 +96,10 @@ final class RockHighlight {
 
 		UseBlockCallback.EVENT.register((player, world, hand, hit) -> {
 			if (hand == InteractionHand.MAIN_HAND && world instanceof ClientLevel && blocks.contains(hit.getBlockPos().asLong())) {
+				// the outline and the sound go at once; the server is told to look again (in case it did not launch)
+				clear();
+				sentHas = false;
+				ClientPlayNetworking.send(new RockHoverPayload(false, 0L));
 				return InteractionResult.SUCCESS;
 			}
 
@@ -120,6 +141,8 @@ final class RockHighlight {
 			clear();
 		}
 
+		updateHum(client, !blocks.isEmpty());
+
 		if (player == null) {
 			sentHas = false;
 			return;
@@ -129,6 +152,37 @@ final class RockHighlight {
 			sentHas = has;
 			sentPos = pos;
 			ClientPlayNetworking.send(new RockHoverPayload(has, pos));
+		}
+	}
+
+	/** The looping sound while a launchable rock is looked at: fades in, and fades out within a second when that ends. */
+	private static void updateHum(Minecraft mc, boolean want) {
+		var sounds = mc.getSoundManager();
+
+		if (hum != null) {
+			humTicks++;
+
+			if (humTicks > 20 && !sounds.isActive(hum)) {
+				hum = null;
+				humFading = false;
+			}
+		}
+
+		if (want) {
+			if (hum == null) {
+				hum = new FadingSound(HUM, SoundSource.BLOCKS, 0.0F);
+				hum.setLoop(true);
+				hum.fadeTo(HUM_VOLUME, HUM_FADE_IN, false);
+				sounds.play(hum);
+				humTicks = 0;
+				humFading = false;
+			} else if (humFading) {
+				hum.fadeTo(HUM_VOLUME, HUM_FADE_IN, false);
+				humFading = false;
+			}
+		} else if (hum != null && !humFading) {
+			hum.fadeTo(0.0F, HUM_FADE_OUT, true);
+			humFading = true;
 		}
 	}
 
@@ -305,6 +359,22 @@ final class RockHighlight {
 				yawDeg = ((Number) camYaw.invoke(cam)).doubleValue();
 				pitchDeg = ((Number) camPitch.invoke(cam)).doubleValue();
 				fovDeg = mc.options.fov().get();
+
+				if (fovMethod == null && fovNow != null && fovOld != null) {
+					// the game's smoothed field of view change (sprinting, flying, speed, ...) and the dip under water or in lava
+					try {
+						fovDeg *= Mth.lerp(partial, fovOld.getFloat(gameRenderer), fovNow.getFloat(gameRenderer));
+
+						if (player.isEyeInFluid(FluidTags.WATER) || player.isEyeInFluid(FluidTags.LAVA)) {
+							fovDeg *= Mth.lerp(mc.options.fovEffectScale().get(), 1.0, 0.85714287);
+						}
+
+						exact = true;
+					} catch (ReflectiveOperationException | RuntimeException ex) {
+						fovNow = null;
+						fovOld = null;
+					}
+				}
 
 				if (fovMethod != null) {
 					try {
@@ -535,11 +605,44 @@ final class RockHighlight {
 					fovMethod = m;
 				}
 			}
+
+			for (Field f : gameRenderer.getClass().getDeclaredFields()) {
+				String name = f.getName().toLowerCase(Locale.ROOT);
+
+				if (f.getType() == float.class && name.contains("fov") && !java.lang.reflect.Modifier.isStatic(f.getModifiers())) {
+					f.setAccessible(true);
+
+					if (name.startsWith("old")) {
+						fovOld = f;
+					} else {
+						fovNow = f;
+					}
+				}
+			}
 		} catch (Throwable ex) {
 			camOk = false;
 		}
 
-		SkyIslands.LOGGER.info("Sky Islands: fallen rock outline uses {} camera and {} field of view", camOk ? "the game's" : "the player's", fovMethod != null ? "the game's" : "the option's");
+		StringBuilder members = new StringBuilder();
+
+		try {
+			for (Method m : gameRenderer.getClass().getDeclaredMethods()) {
+				if (m.getName().toLowerCase(Locale.ROOT).contains("fov")) {
+					members.append(m.getName()).append(java.util.Arrays.toString(m.getParameterTypes())).append("->").append(m.getReturnType().getSimpleName()).append(' ');
+				}
+			}
+
+			for (Field f : gameRenderer.getClass().getDeclaredFields()) {
+				if (f.getName().toLowerCase(Locale.ROOT).contains("fov")) {
+					members.append(f.getName()).append(':').append(f.getType().getSimpleName()).append(' ');
+				}
+			}
+		} catch (Throwable ex) {
+			members.append("(unreadable)");
+		}
+
+		SkyIslands.LOGGER.info("Sky Islands: fallen rock outline uses {} camera and {} field of view (GameRenderer fov members: {})",
+				camOk ? "the game's" : "the player's", fovMethod != null ? "the game's method for the" : fovNow != null && fovOld != null ? "the game's smoothed" : "the option's", members);
 	}
 
 	private static Class<?> boxed(Class<?> c) {
