@@ -69,5 +69,12 @@
         "stream": true
       }
     ]
+  },
+  "rock.recall_start": {
+    "sounds": [
+      {
+        "name": "sky_islands:rock/recall_start"
+      }
+    ]
   }
 }

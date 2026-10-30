@@ -63,6 +63,9 @@ final class RockHighlight {
 
 	private static final Identifier HUM = SkyIslands.id("rock.recall_hover");
 	private static final float HUM_VOLUME = 0.7F;
+	/** Played once, at full volume, when a rock is activated. */
+	private static final Identifier START = SkyIslands.id("rock.recall_start");
+	private static final float START_VOLUME = 1.0F;
 	/** The sound fades in over this many ticks (1 second) when a launchable rock is looked at. */
 	private static final int HUM_FADE_IN = 20;
 	/** The sound fades out within this many ticks (1 second) when the rock is launched or the player looks away. */
@@ -70,6 +73,7 @@ final class RockHighlight {
 
 	private static FadingSound hum;
 	private static boolean humFading;
+	private static boolean humChecked;
 	private static int humTicks;
 
 	private static boolean sentHas;
@@ -98,7 +102,8 @@ final class RockHighlight {
 
 		UseBlockCallback.EVENT.register((player, world, hand, hit) -> {
 			if (hand == InteractionHand.MAIN_HAND && world instanceof ClientLevel && blocks.contains(hit.getBlockPos().asLong())) {
-				// the outline and the sound go at once; the server is told to look again (in case it did not launch)
+				// the outline and the hum go at once (the hum fades out); the launch sound plays once; the server is told to look again
+				playStart();
 				clear();
 				sentHas = false;
 				ClientPlayNetworking.send(new RockHoverPayload(false, 0L));
@@ -107,6 +112,11 @@ final class RockHighlight {
 
 			return InteractionResult.PASS;
 		});
+	}
+
+	/** The sound of activating a rock: plays once, from start to end, and is not tied to where the player stands. */
+	private static void playStart() {
+		Minecraft.getInstance().getSoundManager().play(new FadingSound(START, SoundSource.BLOCKS, START_VOLUME));
 	}
 
 	private static void set(List<Long> list) {
@@ -164,6 +174,14 @@ final class RockHighlight {
 		if (hum != null) {
 			humTicks++;
 
+			if (!humChecked && humTicks == 10) {
+				humChecked = true;
+
+				if (!sounds.isActive(hum)) {
+					SkyIslands.LOGGER.warn("Sky Islands: the fallen rock hover sound ({}) is not playing; check the Blocks volume slider and the resource pack", HUM);
+				}
+			}
+
 			if (hum.isStopped() || (humTicks > 20 && !sounds.isActive(hum))) {
 				hum = null;
 				humFading = false;
@@ -177,6 +195,7 @@ final class RockHighlight {
 				hum.fadeTo(HUM_VOLUME, HUM_FADE_IN, false);
 				sounds.play(hum);
 				humTicks = 0;
+				humChecked = false;
 				humFading = false;
 			} else if (humFading) {
 				hum.fadeTo(HUM_VOLUME, HUM_FADE_IN, false);

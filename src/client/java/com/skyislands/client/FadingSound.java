@@ -11,6 +11,12 @@ import net.minecraft.sounds.SoundSource;
  * controls it), is not positional, and does not loop unless {@link #setLoop} is used.
  */
 public class FadingSound extends AbstractSoundInstance implements TickableSoundInstance {
+	/**
+	 * The sound engine skips a sound that starts at volume 0 (and never plays it, with nothing in the log), so a sound that is
+	 * going to fade in starts at a volume nobody can hear instead.
+	 */
+	private static final float MIN_START_VOLUME = 0.001F;
+
 	private final Identifier soundId;
 	private boolean stopped;
 	private boolean stopAtZero;
@@ -26,7 +32,7 @@ public class FadingSound extends AbstractSoundInstance implements TickableSoundI
 	public FadingSound(Identifier sound, SoundSource source, float startVolume) {
 		super(sound, source, SoundInstance.createUnseededRandom());
 		this.soundId = sound;
-		this.volume = startVolume;
+		this.volume = Math.max(startVolume, MIN_START_VOLUME);
 		this.target = startVolume;
 		this.looping = false;
 		this.relative = true;
