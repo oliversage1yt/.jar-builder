@@ -34,6 +34,7 @@ import net.minecraft.tags.BlockTags;
 import net.minecraft.tags.TagKey;
 import net.minecraft.world.InteractionHand;
 import net.minecraft.world.InteractionResult;
+import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.entity.ai.attributes.AttributeInstance;
 import net.minecraft.world.entity.ai.attributes.AttributeModifier;
 import net.minecraft.world.entity.ai.attributes.Attributes;
@@ -48,6 +49,7 @@ import net.minecraft.world.level.levelgen.structure.BoundingBox;
 import net.minecraft.world.level.levelgen.structure.Structure;
 import net.minecraft.world.level.levelgen.structure.StructurePiece;
 import net.minecraft.world.level.levelgen.structure.StructureStart;
+import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.BlockHitResult;
 
 /**
@@ -71,6 +73,18 @@ import net.minecraft.world.phys.BlockHitResult;
  */
 public final class FallenRocks {
 	private static final TagKey<Structure> ROCKS = TagKey.create(Registries.STRUCTURE, SkyIslands.id("fallen_rocks"));
+	/** The decorative piles of rock (fallen_rock_ruins1..3): only look like fallen rocks, so they can never be selected or launched. */
+	private static final TagKey<Structure> RUINS = TagKey.create(Registries.STRUCTURE, SkyIslands.id("fallen_rock_ruins"));
+
+	/** Players this close to a launched rock see the world in grayscale until the rock starts to fall. */
+	private static final double FILTER_RADIUS = 10.0;
+	/** How often (in ticks) it is worked out who is close enough. */
+	private static final int FILTER_CHECK_TICKS = 4;
+	/**
+	 * What a rock does to a creature it falls onto: the damage of an anvil that has fallen about 20 blocks (an anvil does 2 damage
+	 * for each block it fell, less the first one: 2 * 19 = 38).
+	 */
+	private static final float IMPACT_DAMAGE = 38.0F;
 
 	/** The rock rises until the player standing on it is at this height. */
 	private static final int TARGET_Y = 430;
@@ -138,6 +152,10 @@ public final class FallenRocks {
 		final Map<UUID, Double> lastY = new HashMap<>();
 		double fallDistance;
 		double fallSpeed;
+		/** Players who currently see the grayscale filter of this rock. */
+		final Set<UUID> filtered = new HashSet<>();
+		/** Creatures this rock has already hit on its way down (each one is hit once). */
+		final Set<UUID> struck = new HashSet<>();
 
 		Rock(ServerLevel level, BoundingBox box, long key, List<Cell> cells) {
 			this.level = level;
@@ -168,6 +186,8 @@ public final class FallenRocks {
 
 	private static final Map<Long, Rock> ACTIVE = new HashMap<>();
 	private static final Map<UUID, Hover> HOVER = new HashMap<>();
+	/** For each player who sees the grayscale filter: the rocks (their keys) that cause it. */
+	private static final Map<UUID, Set<Long>> FILTER = new HashMap<>();
 	/** Rocks that were seen with a block missing or added (until the server stops). */
 	private static final Set<Long> DEAD = new HashSet<>();
 	private static final Map<Long, Integer> COOLDOWN = new HashMap<>();
@@ -185,6 +205,7 @@ public final class FallenRocks {
 		PayloadTypeRegistry.serverboundPlay().register(RockHoverPayload.TYPE, RockHoverPayload.CODEC);
 		PayloadTypeRegistry.clientboundPlay().register(RockHighlightPayload.TYPE, RockHighlightPayload.CODEC);
 		PayloadTypeRegistry.clientboundPlay().register(RockRecallPayload.TYPE, RockRecallPayload.CODEC);
+		PayloadTypeRegistry.clientboundPlay().register(RockFilterPayload.TYPE, RockFilterPayload.CODEC);
 		ServerPlayNetworking.registerGlobalReceiver(RockHoverPayload.TYPE, (payload, context) -> onHover(context.player(), payload));
 		UseBlockCallback.EVENT.register(FallenRocks::onUseBlock);
 	}
@@ -192,6 +213,7 @@ public final class FallenRocks {
 	public static void clear() {
 		ACTIVE.clear();
 		HOVER.clear();
+		FILTER.clear();
 		DEAD.clear();
 		COOLDOWN.clear();
 		QUEUE.clear();
@@ -207,6 +229,7 @@ public final class FallenRocks {
 	private static void restoreAll(MinecraftServer server) {
 		for (Rock rock : ACTIVE.values()) {
 			try {
+				clearFilter(rock);
 				releaseLift(rock);
 				shift(rock, 0);
 			} catch (Throwable t) {
@@ -910,6 +933,11 @@ public final class FallenRocks {
 			return null;
 		}
 
+		// the decorative ruins are built of the same blocks as a rock but can never be selected or launched
+		if (level.structureManager().getStructureWithPieceAt(pos, RUINS).isValid()) {
+			return null;
+		}
+
 		BoundingBox box = locate(level, pos);
 
 		if (box == null) {
@@ -1035,6 +1063,103 @@ public final class FallenRocks {
 		return InteractionResult.SUCCESS;
 	}
 
+	// ---------------------------------------------------------------- the grayscale filter
+
+	/** Works out who is close enough to the rock to see the filter, and tells the players whose situation changed. */
+	private static void updateFilter(Rock rock) {
+		double cx = (rock.box.minX() + rock.box.maxX() + 1) / 2.0;
+		double cy = rock.box.minY() + rock.dy + (rock.box.maxY() - rock.box.minY() + 1) / 2.0;
+		double cz = (rock.box.minZ() + rock.box.maxZ() + 1) / 2.0;
+		Set<UUID> near = new HashSet<>();
+		Map<UUID, ServerPlayer> players = new HashMap<>();
+
+		for (ServerPlayer player : rock.level.players()) {
+			double dx = player.getX() - cx;
+			double dy = player.getY() - cy;
+			double dz = player.getZ() - cz;
+
+			if (player.isAlive() && dx * dx + dy * dy + dz * dz <= FILTER_RADIUS * FILTER_RADIUS) {
+				near.add(player.getUUID());
+				players.put(player.getUUID(), player);
+			}
+		}
+
+		for (UUID id : near) {
+			if (rock.filtered.add(id)) {
+				setFilter(rock, id, players.get(id), true);
+			}
+		}
+
+		for (UUID id : new ArrayList<>(rock.filtered)) {
+			if (!near.contains(id)) {
+				rock.filtered.remove(id);
+				setFilter(rock, id, rock.level.getPlayerByUUID(id) instanceof ServerPlayer p ? p : null, false);
+			}
+		}
+	}
+
+	/** Takes the filter of this rock away from everybody (the rock started to fall, or the flight ended). */
+	private static void clearFilter(Rock rock) {
+		for (UUID id : new ArrayList<>(rock.filtered)) {
+			rock.filtered.remove(id);
+			setFilter(rock, id, rock.level.getPlayerByUUID(id) instanceof ServerPlayer p ? p : null, false);
+		}
+	}
+
+	/** A player sees the filter as long as at least one rock causes it: the client is only told when that changes. */
+	private static void setFilter(Rock rock, UUID id, ServerPlayer player, boolean on) {
+		Set<Long> causes = FILTER.computeIfAbsent(id, k -> new HashSet<>());
+
+		if (on) {
+			boolean first = causes.isEmpty();
+			causes.add(rock.key);
+
+			if (first && player != null) {
+				ServerPlayNetworking.send(player, new RockFilterPayload(true));
+			}
+
+			return;
+		}
+
+		causes.remove(rock.key);
+
+		if (causes.isEmpty()) {
+			FILTER.remove(id);
+
+			if (player != null) {
+				ServerPlayNetworking.send(player, new RockFilterPayload(false));
+			}
+		}
+	}
+
+	// ---------------------------------------------------------------- the impact
+
+	/** A rock that is about to move down hurts the creatures in its way, like a falling anvil (each one once per fall). */
+	private static void crush(Rock rock, int newDy) {
+		ServerLevel level = rock.level;
+		double oldBottom = rock.box.minY() + rock.dy;
+		double newBottom = rock.box.minY() + newDy;
+		Set<Long> columns = new HashSet<>();
+
+		for (Cell cell : rock.cells) {
+			int x = rock.box.minX() + cell.x();
+			int z = rock.box.minZ() + cell.z();
+
+			if (!columns.add(BlockPos.asLong(x, 0, z))) {
+				continue;
+			}
+
+			// the space the rock is about to pass through, above this column of it
+			for (LivingEntity entity : level.getEntitiesOfClass(LivingEntity.class, new AABB(x, newBottom, z, x + 1.0, oldBottom, z + 1.0))) {
+				if (!entity.isAlive() || (entity instanceof Player player && player.isSpectator()) || !rock.struck.add(entity.getUUID())) {
+					continue;
+				}
+
+				entity.hurtServer(level, level.damageSources().fallingBlock(null), IMPACT_DAMAGE);
+			}
+		}
+	}
+
 	/** Tells the player who launched the rock which stage of its flight it is in (for the sounds on their client). */
 	private static void notifyDriver(Rock rock, int event) {
 		if (rock.driver != null && rock.level.getPlayerByUUID(rock.driver) instanceof ServerPlayer driver) {
@@ -1054,6 +1179,7 @@ public final class FallenRocks {
 
 		ACTIVE.put(rock.key, rock);
 		notifyDriver(rock, RockRecallPayload.RISE);
+		updateFilter(rock);
 		// whatever leaves hang over the rock are gone before it rises into them
 		clearLeaves(level, rock.box, rock.box.maxY() + 1, TARGET_Y + (rock.box.maxY() - rock.box.minY() + 1) + CLEARANCE_ABOVE_TARGET);
 		command(level, String.format(Locale.ROOT, "playsound minecraft:block.deepslate.break block @a %.1f %.1f %.1f 3.0 0.5",
@@ -1102,6 +1228,7 @@ public final class FallenRocks {
 
 			if (!keep) {
 				notifyDriver(rock, RockRecallPayload.END);
+				clearFilter(rock);
 				releaseLift(rock);
 
 				if (rock.dy != 0) {
@@ -1135,6 +1262,10 @@ public final class FallenRocks {
 			return false;
 		}
 
+		if (rock.phase != Phase.FALLING && rock.age % FILTER_CHECK_TICKS == 0) {
+			updateFilter(rock);
+		}
+
 		switch (rock.phase) {
 			case RISING -> rise(rock, cx, cz);
 			case HOVER -> {
@@ -1150,6 +1281,9 @@ public final class FallenRocks {
 					clearLeaves(rock.level, rock.box, rock.box.minY(), rock.box.maxY() + rock.dy + 1);
 					rock.phase = Phase.FALLING;
 					notifyDriver(rock, RockRecallPayload.FALL);
+					// the filter ends as the rock starts to fall
+					clearFilter(rock);
+					rock.struck.clear();
 					rock.fallDistance = 0.0;
 					rock.fallSpeed = 0.0;
 				}
@@ -1316,6 +1450,10 @@ public final class FallenRocks {
 	private static void shift(Rock rock, int newDy) {
 		ServerLevel level = rock.level;
 		BlockState air = Blocks.AIR.defaultBlockState();
+
+		if (rock.phase == Phase.FALLING && newDy < rock.dy) {
+			crush(rock, newDy);
+		}
 
 		// leaves in the way (above when rising, below when falling) are broken as the rock moves through them
 		clearLeaves(level, rock.box, rock.box.minY() + Math.min(rock.dy, newDy), rock.box.maxY() + Math.max(rock.dy, newDy) + 1);

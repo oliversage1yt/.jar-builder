@@ -1,0 +1,23 @@
+{
+  "fallback": "minecraft:empty",
+  "elements": [
+    {
+      "weight": 1,
+      "element": {
+        "element_type": "minecraft:single_pool_element",
+        "location": "sky_islands:fallen_rock_ruins/fallen_rock_ruins1",
+        "projection": "rigid",
+        "processors": {
+          "processors": [
+            {
+              "processor_type": "minecraft:block_ignore",
+              "blocks": [
+                "minecraft:air"
+              ]
+            }
+          ]
+        }
+      }
+    }
+  ]
+}
