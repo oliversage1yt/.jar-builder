@@ -20,6 +20,7 @@ import net.minecraft.util.Mth;
 import net.minecraft.resources.Identifier;
 import net.minecraft.sounds.SoundSource;
 import net.minecraft.tags.FluidTags;
+import net.minecraft.world.entity.ai.attributes.Attributes;
 import net.minecraft.world.InteractionHand;
 import net.minecraft.world.InteractionResult;
 import net.minecraft.world.level.block.Blocks;
@@ -62,7 +63,8 @@ final class RockHighlight {
 
 	private static final Identifier HUM = SkyIslands.id("rock.recall_hover");
 	private static final float HUM_VOLUME = 0.7F;
-	private static final int HUM_FADE_IN = 10;
+	/** The sound fades in over this many ticks (1 second) when a launchable rock is looked at. */
+	private static final int HUM_FADE_IN = 20;
 	/** The sound fades out within this many ticks (1 second) when the rock is launched or the player looks away. */
 	private static final int HUM_FADE_OUT = 20;
 
@@ -162,7 +164,7 @@ final class RockHighlight {
 		if (hum != null) {
 			humTicks++;
 
-			if (humTicks > 20 && !sounds.isActive(hum)) {
+			if (hum.isStopped() || (humTicks > 20 && !sounds.isActive(hum))) {
 				hum = null;
 				humFading = false;
 			}
@@ -396,9 +398,14 @@ final class RockHighlight {
 				fovDeg = mc.options.fov().get();
 			}
 
-			// without the game's own field of view the outline would be off while it changes: no outline then
-			if (!exact && (player.isSprinting() || player.isFallFlying() || player.isUnderWater())) {
-				return;
+			// without the game's own field of view method, work out what the game would draw with (sprinting, speed, and the
+			// narrower view in water or lava) so the outline still lines up, and stays visible, under water
+			if (!exact) {
+				fovDeg = estimateFov(mc, player, fovDeg);
+
+				if (Double.isNaN(fovDeg)) {
+					return;
+				}
 			}
 
 			double yaw = Math.toRadians(yawDeg);
@@ -454,6 +461,81 @@ final class RockHighlight {
 			failed = true;
 			SkyIslands.LOGGER.warn("Sky Islands: the golden outline on fallen rocks was switched off: {}", ex.toString());
 		}
+	}
+
+	private static Method fovModifierMethod;
+	private static boolean fovModifierResolved;
+	private static boolean fovEstimateLogged;
+
+	/** The player's own field of view modifier method (the game's: sprinting, speed, flying, bow), found by name. May be null. */
+	private static Method fovModifierMethod(LocalPlayer player) {
+		if (!fovModifierResolved) {
+			fovModifierResolved = true;
+
+			for (Method m : player.getClass().getMethods()) {
+				Class<?>[] p = m.getParameterTypes();
+
+				if (m.getName().equals("getFieldOfViewModifier") && p.length == 2 && p[0] == boolean.class && p[1] == float.class
+						&& Number.class.isAssignableFrom(boxed(m.getReturnType()))) {
+					fovModifierMethod = m;
+				}
+			}
+		}
+
+		return fovModifierMethod;
+	}
+
+	/**
+	 * The field of view the game draws with, worked out here when its own method could not be found: the option, times the
+	 * speed / flying modifier, times the narrower view while the eye is in water or lava. NaN when it cannot be told.
+	 */
+	private static double estimateFov(Minecraft mc, LocalPlayer player, double baseFov) {
+		double scale = mc.options.fovEffectScale().get();
+		double fov = baseFov;
+
+		try {
+			Method method = fovModifierMethod(player);
+			double modifier;
+
+			if (method != null) {
+				modifier = ((Number) method.invoke(player, firstPerson(mc), (float) scale)).doubleValue();
+			} else {
+				double f = 1.0;
+
+				try {
+					Object abilities = player.getClass().getMethod("getAbilities").invoke(player);
+
+					if (abilities.getClass().getField("flying").getBoolean(abilities)) {
+						f *= 1.1;
+					}
+				} catch (ReflectiveOperationException | RuntimeException ex) {
+					// no abilities to read: not flying
+				}
+
+				f *= (player.getAttributeValue(Attributes.MOVEMENT_SPEED) / 0.1 + 1.0) / 2.0;
+
+				if (Double.isNaN(f) || Double.isInfinite(f)) {
+					f = 1.0;
+				}
+
+				modifier = Mth.lerp(scale, 1.0, f);
+			}
+
+			fov *= modifier;
+		} catch (Throwable ex) {
+			return Double.NaN;
+		}
+
+		if (player.isEyeInFluid(FluidTags.WATER) || player.isEyeInFluid(FluidTags.LAVA)) {
+			fov *= Mth.lerp(scale, 1.0, 0.85714287);
+		}
+
+		if (!fovEstimateLogged) {
+			fovEstimateLogged = true;
+			SkyIslands.LOGGER.info("Sky Islands: the game's field of view method was not found, so the fallen rock outline works it out itself (this keeps it visible under water)");
+		}
+
+		return fov;
 	}
 
 	private static double[] toCamera(double[] p, Vec3 eye, double[] f, double[] r, double[] u) {
