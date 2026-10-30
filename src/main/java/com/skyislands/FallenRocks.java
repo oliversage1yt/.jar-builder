@@ -184,6 +184,7 @@ public final class FallenRocks {
 		ServerLifecycleEvents.SERVER_STOPPING.register(FallenRocks::restoreAll);
 		PayloadTypeRegistry.serverboundPlay().register(RockHoverPayload.TYPE, RockHoverPayload.CODEC);
 		PayloadTypeRegistry.clientboundPlay().register(RockHighlightPayload.TYPE, RockHighlightPayload.CODEC);
+		PayloadTypeRegistry.clientboundPlay().register(RockRecallPayload.TYPE, RockRecallPayload.CODEC);
 		ServerPlayNetworking.registerGlobalReceiver(RockHoverPayload.TYPE, (payload, context) -> onHover(context.player(), payload));
 		UseBlockCallback.EVENT.register(FallenRocks::onUseBlock);
 	}
@@ -1034,6 +1035,13 @@ public final class FallenRocks {
 		return InteractionResult.SUCCESS;
 	}
 
+	/** Tells the player who launched the rock which stage of its flight it is in (for the sounds on their client). */
+	private static void notifyDriver(Rock rock, int event) {
+		if (rock.driver != null && rock.level.getPlayerByUUID(rock.driver) instanceof ServerPlayer driver) {
+			ServerPlayNetworking.send(driver, new RockRecallPayload(event));
+		}
+	}
+
 	private static boolean start(ServerLevel level, ServerPlayer player, Rock rock) {
 		rock.driver = player.getUUID();
 		// on the rock: the lift starts from the player's feet; beside it: from the top of the rock
@@ -1045,6 +1053,7 @@ public final class FallenRocks {
 		}
 
 		ACTIVE.put(rock.key, rock);
+		notifyDriver(rock, RockRecallPayload.RISE);
 		// whatever leaves hang over the rock are gone before it rises into them
 		clearLeaves(level, rock.box, rock.box.maxY() + 1, TARGET_Y + (rock.box.maxY() - rock.box.minY() + 1) + CLEARANCE_ABOVE_TARGET);
 		command(level, String.format(Locale.ROOT, "playsound minecraft:block.deepslate.break block @a %.1f %.1f %.1f 3.0 0.5",
@@ -1092,6 +1101,7 @@ public final class FallenRocks {
 			}
 
 			if (!keep) {
+				notifyDriver(rock, RockRecallPayload.END);
 				releaseLift(rock);
 
 				if (rock.dy != 0) {
@@ -1139,6 +1149,7 @@ public final class FallenRocks {
 					// leaves that have appeared in the way down are broken before the rock drops
 					clearLeaves(rock.level, rock.box, rock.box.minY(), rock.box.maxY() + rock.dy + 1);
 					rock.phase = Phase.FALLING;
+					notifyDriver(rock, RockRecallPayload.FALL);
 					rock.fallDistance = 0.0;
 					rock.fallSpeed = 0.0;
 				}
@@ -1191,6 +1202,7 @@ public final class FallenRocks {
 			command(rock.level, String.format(Locale.ROOT, "playsound minecraft:block.deepslate.break block @a %.1f %.1f %.1f 3.0 0.8",
 					cx, (double) (rock.box.minY() + rock.dy), cz));
 			rock.phase = Phase.HOVER;
+			notifyDriver(rock, RockRecallPayload.PEAK);
 			rock.timer = 0;
 			return;
 		}

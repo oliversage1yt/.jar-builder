@@ -15,6 +15,7 @@ public class SkyIslandsClient implements ClientModInitializer {
 		MusicToast.register();
 		RecipeToastHud.register();
 		RockHighlight.register();
+		RockRecallSounds.register();
 
 		ClientTickEvents.END_CLIENT_TICK.register(client -> {
 			MusicController.tick(client);
@@ -22,6 +23,7 @@ public class SkyIslandsClient implements ClientModInitializer {
 			RainAboveClouds.tick(client);
 			WindBlockInput.tick(client);
 			RockHighlight.tick(client);
+			RockRecallSounds.tick(client);
 			PrismarineArrowHider.tick(client);
 		});
 

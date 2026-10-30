@@ -76,5 +76,20 @@
         "name": "sky_islands:rock/recall_start"
       }
     ]
+  },
+  "rock.recall_perform": {
+    "sounds": [
+      {
+        "name": "sky_islands:rock/recall_perform",
+        "stream": true
+      }
+    ]
+  },
+  "rock.recall_finish": {
+    "sounds": [
+      {
+        "name": "sky_islands:rock/recall_finish"
+      }
+    ]
   }
 }
