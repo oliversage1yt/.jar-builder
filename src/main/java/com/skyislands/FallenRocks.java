@@ -23,6 +23,7 @@ import net.fabricmc.fabric.api.networking.v1.PayloadTypeRegistry;
 import net.fabricmc.fabric.api.networking.v1.ServerPlayNetworking;
 
 import net.minecraft.core.BlockPos;
+import net.minecraft.core.particles.ParticleTypes;
 import net.minecraft.core.Direction;
 import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.core.registries.Registries;
@@ -1063,6 +1064,37 @@ public final class FallenRocks {
 		return InteractionResult.SUCCESS;
 	}
 
+	// ---------------------------------------------------------------- the golden light (the look of a recall)
+
+	/** Golden sparks over the rock where it is now: {@code gold} gold glints and {@code bright} brighter ones, flying out at {@code speed}. */
+	private static void sparks(Rock rock, int gold, int bright, double speed, double spread) {
+		double w = rock.box.maxX() - rock.box.minX() + 1;
+		double h = rock.box.maxY() - rock.box.minY() + 1;
+		double d = rock.box.maxZ() - rock.box.minZ() + 1;
+		double cx = rock.box.minX() + w / 2.0;
+		double cy = rock.box.minY() + rock.dy + h / 2.0;
+		double cz = rock.box.minZ() + d / 2.0;
+		rock.level.sendParticles(ParticleTypes.WAX_ON, cx, cy, cz, gold, w / 2.0 + spread, h / 2.0 + spread, d / 2.0 + spread, speed);
+
+		if (bright > 0) {
+			rock.level.sendParticles(ParticleTypes.END_ROD, cx, cy, cz, bright, w / 2.0 + spread, h / 2.0 + spread, d / 2.0 + spread, speed);
+		}
+	}
+
+	/** The golden light the rising rock leaves behind it: a few glints under its base every tick. */
+	private static void trail(Rock rock) {
+		double w = rock.box.maxX() - rock.box.minX() + 1;
+		double d = rock.box.maxZ() - rock.box.minZ() + 1;
+		double cx = rock.box.minX() + w / 2.0;
+		double cz = rock.box.minZ() + d / 2.0;
+		double bottom = rock.box.minY() + rock.dy;
+		rock.level.sendParticles(ParticleTypes.WAX_ON, cx, bottom, cz, 4, w / 2.0, 0.2, d / 2.0, 0.02);
+
+		if (rock.age % 2 == 0) {
+			rock.level.sendParticles(ParticleTypes.END_ROD, cx, bottom, cz, 1, w / 2.0, 0.2, d / 2.0, 0.01);
+		}
+	}
+
 	// ---------------------------------------------------------------- the grayscale filter
 
 	/** Works out who is close enough to the rock to see the filter, and tells the players whose situation changed. */
@@ -1180,6 +1212,7 @@ public final class FallenRocks {
 		ACTIVE.put(rock.key, rock);
 		notifyDriver(rock, RockRecallPayload.RISE);
 		updateFilter(rock);
+		sparks(rock, 40, 8, 0.15, 0.3);
 		// whatever leaves hang over the rock are gone before it rises into them
 		clearLeaves(level, rock.box, rock.box.maxY() + 1, TARGET_Y + (rock.box.maxY() - rock.box.minY() + 1) + CLEARANCE_ABOVE_TARGET);
 		command(level, String.format(Locale.ROOT, "playsound minecraft:block.deepslate.break block @a %.1f %.1f %.1f 3.0 0.5",
@@ -1266,6 +1299,12 @@ public final class FallenRocks {
 			updateFilter(rock);
 		}
 
+		if (rock.phase == Phase.RISING) {
+			trail(rock);
+		} else if (rock.phase == Phase.HOVER && rock.age % 3 == 0) {
+			sparks(rock, 2, 0, 0.01, 0.4);
+		}
+
 		switch (rock.phase) {
 			case RISING -> rise(rock, cx, cz);
 			case HOVER -> {
@@ -1274,6 +1313,7 @@ public final class FallenRocks {
 				if (rock.timer >= HOVER_TICKS - 40 && rock.timer % 10 == 0) {
 					command(rock.level, String.format(Locale.ROOT, "playsound minecraft:block.deepslate.hit block @a %.1f %.1f %.1f 3.0 0.6",
 							cx, (double) (rock.box.minY() + rock.dy), cz));
+					sparks(rock, 8, 2, 0.06, 0.3);
 				}
 
 				if (rock.timer >= HOVER_TICKS) {
@@ -1281,8 +1321,9 @@ public final class FallenRocks {
 					clearLeaves(rock.level, rock.box, rock.box.minY(), rock.box.maxY() + rock.dy + 1);
 					rock.phase = Phase.FALLING;
 					notifyDriver(rock, RockRecallPayload.FALL);
-					// the filter ends as the rock starts to fall
+					// the filter ends as the rock starts to fall, and the sparks fly off it to show that the effect has worn off
 					clearFilter(rock);
+					sparks(rock, 90, 25, 0.35, 0.3);
 					rock.struck.clear();
 					rock.fallDistance = 0.0;
 					rock.fallSpeed = 0.0;

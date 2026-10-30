@@ -2,9 +2,10 @@
 
 uniform sampler2D InSampler;
 
-in vec2 texCoord;
+// this version of the game compiles shaders to SPIR-V, which wants a location on every input and output
+layout(location = 0) in vec2 texCoord;
 
-out vec4 fragColor;
+layout(location = 0) out vec4 fragColor;
 
 void main() {
     vec4 color = texture(InSampler, texCoord);
