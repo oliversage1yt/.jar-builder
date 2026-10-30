@@ -32,6 +32,8 @@ final class RockFilter {
 	private static Object renderer;
 	private static Method setEffect;
 	private static Method clearEffect;
+	/** Which screen effect the game has switched on for the "spectated entity" slot right now (to notice if the game takes ours away). */
+	private static Method currentEffect;
 	private static Method fillMethod;
 
 	private static boolean on;
@@ -55,6 +57,24 @@ final class RockFilter {
 
 		if (mc.player == null || mc.level == null || ticks > MAX_TICKS) {
 			set(false);
+			return;
+		}
+
+		// the game clears that slot when the camera changes to another entity: put ours back
+		if (effectApplied && currentEffect != null) {
+			try {
+				Object current = currentEffect.invoke(renderer);
+
+				if (current instanceof java.util.Optional<?> optional) {
+					current = optional.orElse(null);
+				}
+
+				if (!EFFECT.equals(current)) {
+					setEffect.invoke(renderer, EFFECT);
+				}
+			} catch (Throwable ex) {
+				// nothing to put back
+			}
 		}
 	}
 
@@ -73,6 +93,7 @@ final class RockFilter {
 				try {
 					setEffect.invoke(renderer, EFFECT);
 					effectApplied = true;
+					SkyIslands.LOGGER.info("Sky Islands: grayscale screen effect switched on ({})", EFFECT);
 					return;
 				} catch (Throwable ex) {
 					SkyIslands.LOGGER.warn("Sky Islands: the grayscale screen effect could not be switched on, using a gray veil instead: {}", ex.toString());
@@ -111,14 +132,23 @@ final class RockFilter {
 					found.add(name + java.util.Arrays.toString(m.getParameterTypes()));
 				}
 
-				if ((name.equals("setPostEffect") || name.equals("loadEffect")) && m.getParameterCount() == 1 && m.getParameterTypes()[0] == Identifier.class) {
+				// the game's slot for a screen effect that stays on until it is cleared (the creeper / spider view when spectating):
+				// the current names first, then the older ones
+				if ((name.equals("setSpectatedEntityPostEffect") || name.equals("setPostEffect") || name.equals("loadEffect"))
+						&& m.getParameterCount() == 1 && m.getParameterTypes()[0] == Identifier.class) {
 					m.setAccessible(true);
 					setEffect = m;
 				}
 
-				if ((name.equals("clearPostEffect") || name.equals("shutdownEffect")) && m.getParameterCount() == 0) {
+				if ((name.equals("clearSpectatedEntityPostEffect") || name.equals("clearPostEffect") || name.equals("shutdownEffect"))
+						&& m.getParameterCount() == 0) {
 					m.setAccessible(true);
 					clearEffect = m;
+				}
+
+				if (name.equals("spectatedEntityPostEffect") && m.getParameterCount() == 0) {
+					m.setAccessible(true);
+					currentEffect = m;
 				}
 			}
 		} catch (Throwable ex) {
