@@ -15,6 +15,7 @@ import java.util.UUID;
 import java.util.concurrent.ConcurrentLinkedQueue;
 
 import net.fabricmc.fabric.api.event.lifecycle.v1.ServerChunkEvents;
+import net.fabricmc.fabric.api.event.lifecycle.v1.ServerEntityEvents;
 import net.fabricmc.fabric.api.event.lifecycle.v1.ServerLifecycleEvents;
 import net.fabricmc.fabric.api.event.lifecycle.v1.ServerTickEvents;
 
@@ -35,6 +36,7 @@ import net.minecraft.tags.BlockTags;
 import net.minecraft.tags.TagKey;
 import net.minecraft.world.InteractionHand;
 import net.minecraft.world.InteractionResult;
+import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.entity.ai.attributes.AttributeInstance;
 import net.minecraft.world.entity.ai.attributes.AttributeModifier;
@@ -157,12 +159,21 @@ public final class FallenRocks {
 		final Set<UUID> filtered = new HashSet<>();
 		/** Creatures this rock has already hit on its way down (each one is hit once). */
 		final Set<UUID> struck = new HashSet<>();
+		/** The tag of every golden copy of this rock (glow and ghosts), and the block_state data of each of its blocks. */
+		final String fxTag;
+		List<String> fxStates;
+		boolean halo;
+		int haloDy;
+		int ghostSeq;
+		/** The ghost copies that still exist: {number, age of the rock when it was made}. */
+		final List<int[]> ghosts = new ArrayList<>();
 
 		Rock(ServerLevel level, BoundingBox box, long key, List<Cell> cells) {
 			this.level = level;
 			this.box = box;
 			this.key = key;
 			this.cells = cells;
+			this.fxTag = "sky_fx_" + Long.toUnsignedString(key);
 		}
 	}
 
@@ -189,6 +200,10 @@ public final class FallenRocks {
 	private static final Map<UUID, Hover> HOVER = new HashMap<>();
 	/** For each player who sees the grayscale filter: the rocks (their keys) that cause it. */
 	private static final Map<UUID, Set<Long>> FILTER = new HashMap<>();
+	/** Whether the golden copies are bigger than the blocks (null: not tried yet), and whether they could be made at all. */
+	private static Boolean fxEnlarged;
+	private static boolean fxVerified;
+	private static boolean fxBroken;
 	/** Rocks that were seen with a block missing or added (until the server stops). */
 	private static final Set<Long> DEAD = new HashSet<>();
 	private static final Map<Long, Integer> COOLDOWN = new HashMap<>();
@@ -207,6 +222,13 @@ public final class FallenRocks {
 		PayloadTypeRegistry.clientboundPlay().register(RockHighlightPayload.TYPE, RockHighlightPayload.CODEC);
 		PayloadTypeRegistry.clientboundPlay().register(RockRecallPayload.TYPE, RockRecallPayload.CODEC);
 		PayloadTypeRegistry.clientboundPlay().register(RockFilterPayload.TYPE, RockFilterPayload.CODEC);
+
+		// golden copies that are found in the world while no rock is in the air were left behind (a crash, a world that was closed): remove them
+		ServerEntityEvents.ENTITY_LOAD.register((entity, level) -> {
+			if (ACTIVE.isEmpty() && ArenaBoss.tagsOf(entity).contains(RockFx.TAG)) {
+				entity.discard();
+			}
+		});
 		ServerPlayNetworking.registerGlobalReceiver(RockHoverPayload.TYPE, (payload, context) -> onHover(context.player(), payload));
 		UseBlockCallback.EVENT.register(FallenRocks::onUseBlock);
 	}
@@ -231,6 +253,7 @@ public final class FallenRocks {
 		for (Rock rock : ACTIVE.values()) {
 			try {
 				clearFilter(rock);
+				fxClear(rock);
 				releaseLift(rock);
 				shift(rock, 0);
 			} catch (Throwable t) {
@@ -1064,6 +1087,150 @@ public final class FallenRocks {
 		return InteractionResult.SUCCESS;
 	}
 
+	// ---------------------------------------------------------------- the golden copies (glow and ghost trail)
+
+	/** Makes the block_state data of the rock's blocks the first time it is needed. */
+	private static boolean fxReady(Rock rock) {
+		if (fxBroken) {
+			return false;
+		}
+
+		if (rock.fxStates == null) {
+			List<String> states = new ArrayList<>();
+
+			for (Cell cell : rock.cells) {
+				states.add(RockFx.blockState(cell.state()));
+			}
+
+			rock.fxStates = states;
+		}
+
+		return true;
+	}
+
+	/**
+	 * Summons one golden glowing copy of every block of the rock, as it stands {@code dy} blocks up. {@code halo}: each copy
+	 * also gets its own tag, so the glow can follow the rock block by block. Returns false when they did not appear.
+	 */
+	private static boolean fxSpawn(Rock rock, int dy, String groupTag, boolean halo, boolean enlarged) {
+		for (int i = 0; i < rock.cells.size(); i++) {
+			Cell cell = rock.cells.get(i);
+			List<String> tags = new ArrayList<>(List.of(RockFx.TAG, rock.fxTag, groupTag));
+
+			if (halo) {
+				tags.add(rock.fxTag + "_h" + i);
+			}
+
+			command(rock.level, RockFx.summon(rock.box.minX() + cell.x(), rock.box.minY() + dy + cell.y(), rock.box.minZ() + cell.z(),
+					rock.fxStates.get(i), tags, enlarged));
+		}
+
+		if (fxVerified) {
+			return true;
+		}
+
+		// the commands say nothing when they fail: look for what they should have made
+		AABB around = new AABB(rock.box.minX() - 1, rock.box.minY() + dy - 1, rock.box.minZ() - 1,
+				rock.box.maxX() + 2, rock.box.maxY() + dy + 2, rock.box.maxZ() + 2);
+		return !rock.level.getEntitiesOfClass(Entity.class, around, e -> ArenaBoss.tagsOf(e).contains(groupTag)).isEmpty();
+	}
+
+	/** The glow: golden copies of the rock's blocks around it, from the moment it is launched until it starts to fall. */
+	private static void fxHaloOn(Rock rock) {
+		if (!fxReady(rock)) {
+			return;
+		}
+
+		String group = rock.fxTag + "_halo";
+		boolean ok;
+
+		if (fxEnlarged == null) {
+			// the first time: find out which kind of copy the game accepts
+			fxEnlarged = Boolean.TRUE;
+			ok = fxSpawn(rock, rock.dy, group, true, true);
+
+			if (!ok) {
+				command(rock.level, RockFx.kill(rock.fxTag));
+				fxEnlarged = Boolean.FALSE;
+				ok = fxSpawn(rock, rock.dy, group, true, false);
+			}
+
+			if (ok) {
+				fxVerified = true;
+				SkyIslands.LOGGER.info("Sky Islands: the golden glow of a launched rock works ({} copies)", fxEnlarged ? "slightly enlarged" : "plain");
+			}
+		} else {
+			ok = fxSpawn(rock, rock.dy, group, true, fxEnlarged);
+		}
+
+		if (!ok) {
+			fxBroken = true;
+			command(rock.level, RockFx.kill(rock.fxTag));
+			SkyIslands.LOGGER.warn("Sky Islands: the golden copies of a launched rock (glow and ghost trail) could not be made: the game did not accept a block display with this block_state data: {}",
+					rock.fxStates.isEmpty() ? "(none)" : rock.fxStates.get(0));
+			return;
+		}
+
+		rock.halo = true;
+		rock.haloDy = rock.dy;
+	}
+
+	/** The glow follows the rock as it moves. */
+	private static void fxFollow(Rock rock) {
+		if (!rock.halo || rock.dy == rock.haloDy) {
+			return;
+		}
+
+		rock.haloDy = rock.dy;
+
+		for (int i = 0; i < rock.cells.size(); i++) {
+			Cell cell = rock.cells.get(i);
+			command(rock.level, RockFx.teleport(rock.fxTag + "_h" + i, rock.box.minX() + cell.x(), rock.box.minY() + rock.dy + cell.y(),
+					rock.box.minZ() + cell.z()));
+		}
+	}
+
+	/** The glow ends when the rock starts to fall (the ghosts already in the air finish fading). */
+	private static void fxHaloOff(Rock rock) {
+		if (rock.halo) {
+			rock.halo = false;
+			command(rock.level, RockFx.kill(rock.fxTag + "_halo"));
+		}
+	}
+
+	/** The ghost trail: while the rock rises, a golden copy is left behind every few ticks, and shrinks away. */
+	private static void fxGhosts(Rock rock) {
+		if (rock.phase == Phase.RISING && rock.age % 4 == 0 && rock.dy > 0 && fxReady(rock)) {
+			int seq = rock.ghostSeq++;
+
+			if (fxSpawn(rock, rock.dy, rock.fxTag + "_g" + seq, false, fxEnlarged != null && fxEnlarged)) {
+				rock.ghosts.add(new int[] {seq, rock.age});
+			}
+		}
+
+		for (java.util.Iterator<int[]> it = rock.ghosts.iterator(); it.hasNext();) {
+			int[] ghost = it.next();
+			int life = rock.age - ghost[1];
+
+			if (life == 2) {
+				command(rock.level, RockFx.shrink(rock.fxTag + "_g" + ghost[0]));
+			} else if (life >= 14) {
+				command(rock.level, RockFx.kill(rock.fxTag + "_g" + ghost[0]));
+				it.remove();
+			}
+		}
+	}
+
+	/** Removes every golden copy of this rock. */
+	private static void fxClear(Rock rock) {
+		if (rock.halo || !rock.ghosts.isEmpty()) {
+			command(rock.level, RockFx.kill(rock.fxTag));
+		}
+
+		rock.halo = false;
+		rock.ghosts.clear();
+	}
+
 	// ---------------------------------------------------------------- the golden light (the look of a recall)
 
 	/** Golden sparks over the rock where it is now: {@code gold} gold glints and {@code bright} brighter ones, flying out at {@code speed}. */
@@ -1213,6 +1380,7 @@ public final class FallenRocks {
 		notifyDriver(rock, RockRecallPayload.RISE);
 		updateFilter(rock);
 		sparks(rock, 40, 8, 0.15, 0.3);
+		fxHaloOn(rock);
 		// whatever leaves hang over the rock are gone before it rises into them
 		clearLeaves(level, rock.box, rock.box.maxY() + 1, TARGET_Y + (rock.box.maxY() - rock.box.minY() + 1) + CLEARANCE_ABOVE_TARGET);
 		command(level, String.format(Locale.ROOT, "playsound minecraft:block.deepslate.break block @a %.1f %.1f %.1f 3.0 0.5",
@@ -1262,6 +1430,7 @@ public final class FallenRocks {
 			if (!keep) {
 				notifyDriver(rock, RockRecallPayload.END);
 				clearFilter(rock);
+				fxClear(rock);
 				releaseLift(rock);
 
 				if (rock.dy != 0) {
@@ -1305,6 +1474,8 @@ public final class FallenRocks {
 			sparks(rock, 2, 0, 0.01, 0.4);
 		}
 
+		fxGhosts(rock);
+
 		switch (rock.phase) {
 			case RISING -> rise(rock, cx, cz);
 			case HOVER -> {
@@ -1324,6 +1495,7 @@ public final class FallenRocks {
 					// the filter ends as the rock starts to fall, and the sparks fly off it to show that the effect has worn off
 					clearFilter(rock);
 					sparks(rock, 90, 25, 0.35, 0.3);
+					fxHaloOff(rock);
 					rock.struck.clear();
 					rock.fallDistance = 0.0;
 					rock.fallSpeed = 0.0;
@@ -1347,6 +1519,7 @@ public final class FallenRocks {
 			}
 		}
 
+		fxFollow(rock);
 		return true;
 	}
 
