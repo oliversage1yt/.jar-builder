@@ -159,14 +159,11 @@ public final class FallenRocks {
 		final Set<UUID> filtered = new HashSet<>();
 		/** Creatures this rock has already hit on its way down (each one is hit once). */
 		final Set<UUID> struck = new HashSet<>();
-		/** The tag of every golden copy of this rock (glow and ghosts), and the block_state data of each of its blocks. */
+		/** The tag of every golden copy of this rock (the glow), and the block_state data of each of its blocks. */
 		final String fxTag;
 		List<String> fxStates;
 		boolean halo;
 		int haloDy;
-		int ghostSeq;
-		/** The ghost copies that still exist: {number, age of the rock when it was made}. */
-		final List<int[]> ghosts = new ArrayList<>();
 
 		Rock(ServerLevel level, BoundingBox box, long key, List<Cell> cells) {
 			this.level = level;
@@ -1019,12 +1016,16 @@ public final class FallenRocks {
 
 	private static void sendHighlight(ServerPlayer player, long[] blocks) {
 		List<Long> list = new ArrayList<>(blocks.length);
+		int top = Integer.MIN_VALUE;
 
 		for (long block : blocks) {
 			list.add(block);
+			top = Math.max(top, BlockPos.of(block).getY());
 		}
 
-		ServerPlayNetworking.send(player, new RockHighlightPayload(list));
+		// how far up the rock goes from where it stands (the path the client shows)
+		int rise = blocks.length == 0 ? 0 : Math.max(0, TARGET_Y - (top + 1));
+		ServerPlayNetworking.send(player, new RockHighlightPayload(list, rise));
 	}
 
 	/** Tells each player who is looking at a rock whether it is ready (outline on) or not (outline off), when that changes. */
@@ -1087,7 +1088,7 @@ public final class FallenRocks {
 		return InteractionResult.SUCCESS;
 	}
 
-	// ---------------------------------------------------------------- the golden copies (glow and ghost trail)
+	// ---------------------------------------------------------------- the golden copies (the glow)
 
 	/** Makes the block_state data of the rock's blocks the first time it is needed. */
 	private static boolean fxReady(Rock rock) {
@@ -1166,7 +1167,7 @@ public final class FallenRocks {
 		if (!ok) {
 			fxBroken = true;
 			command(rock.level, RockFx.kill(rock.fxTag));
-			SkyIslands.LOGGER.warn("Sky Islands: the golden copies of a launched rock (glow and ghost trail) could not be made: the game did not accept a block display with this block_state data: {}",
+			SkyIslands.LOGGER.warn("Sky Islands: the golden copies of a launched rock (the glow) could not be made: the game did not accept a block display with this block_state data: {}",
 					rock.fxStates.isEmpty() ? "(none)" : rock.fxStates.get(0));
 			return;
 		}
@@ -1190,7 +1191,7 @@ public final class FallenRocks {
 		}
 	}
 
-	/** The glow ends when the rock starts to fall (the ghosts already in the air finish fading). */
+	/** The glow ends when the rock starts to fall. */
 	private static void fxHaloOff(Rock rock) {
 		if (rock.halo) {
 			rock.halo = false;
@@ -1198,40 +1199,51 @@ public final class FallenRocks {
 		}
 	}
 
-	/** The ghost trail: while the rock rises, a golden copy is left behind every few ticks, and shrinks away. */
-	private static void fxGhosts(Rock rock) {
-		if (rock.phase == Phase.RISING && rock.age % 4 == 0 && rock.dy > 0 && fxReady(rock)) {
-			int seq = rock.ghostSeq++;
-
-			if (fxSpawn(rock, rock.dy, rock.fxTag + "_g" + seq, false, fxEnlarged != null && fxEnlarged)) {
-				rock.ghosts.add(new int[] {seq, rock.age});
-			}
-		}
-
-		for (java.util.Iterator<int[]> it = rock.ghosts.iterator(); it.hasNext();) {
-			int[] ghost = it.next();
-			int life = rock.age - ghost[1];
-
-			if (life == 2) {
-				command(rock.level, RockFx.shrink(rock.fxTag + "_g" + ghost[0]));
-			} else if (life >= 14) {
-				command(rock.level, RockFx.kill(rock.fxTag + "_g" + ghost[0]));
-				it.remove();
-			}
-		}
-	}
-
 	/** Removes every golden copy of this rock. */
 	private static void fxClear(Rock rock) {
-		if (rock.halo || !rock.ghosts.isEmpty()) {
+		if (rock.halo) {
 			command(rock.level, RockFx.kill(rock.fxTag));
 		}
 
 		rock.halo = false;
-		rock.ghosts.clear();
 	}
 
 	// ---------------------------------------------------------------- the golden light (the look of a recall)
+
+	/** The blue streak that follows a falling rock: a column of cold blue flame above it, longer the faster it falls. */
+	private static void streak(Rock rock) {
+		double w = rock.box.maxX() - rock.box.minX() + 1;
+		double d = rock.box.maxZ() - rock.box.minZ() + 1;
+		double cx = rock.box.minX() + w / 2.0;
+		double cz = rock.box.minZ() + d / 2.0;
+		double top = rock.box.maxY() + rock.dy + 1;
+		double length = 6.0 + rock.fallSpeed * 3.0;
+		rock.level.sendParticles(ParticleTypes.SOUL_FIRE_FLAME, cx, top + length / 2.0, cz, 16, w / 3.0, length / 2.0, d / 3.0, 0.0);
+		rock.level.sendParticles(ParticleTypes.ELECTRIC_SPARK, cx, top + length / 2.0, cz, 4, w / 3.0, length / 2.0, d / 3.0, 0.0);
+	}
+
+	/** When a rock hits the ground: waves of blue and green spread out from it along the ground, one ring after the other. */
+	private static void landingWaves(Rock rock) {
+		double w = rock.box.maxX() - rock.box.minX() + 1;
+		double d = rock.box.maxZ() - rock.box.minZ() + 1;
+		double cx = rock.box.minX() + w / 2.0;
+		double cz = rock.box.minZ() + d / 2.0;
+		double y = rock.box.minY() + 0.2;
+		double radius = Math.max(w, d) / 2.0 + 0.3;
+		double[] speeds = {0.25, 0.45, 0.65};
+
+		for (int ring = 0; ring < speeds.length; ring++) {
+			for (int i = 0; i < 36; i++) {
+				double angle = Math.PI * 2.0 * i / 36.0;
+				double dx = Math.cos(angle);
+				double dz = Math.sin(angle);
+				// the particles fly out from the ring (count 0: the three numbers are the direction), blue, green, blue
+				rock.level.sendParticles(ring == 1 ? ParticleTypes.HAPPY_VILLAGER : ParticleTypes.SOUL_FIRE_FLAME,
+						cx + dx * radius, y, cz + dz * radius, 0, dx, 0.02, dz, speeds[ring]);
+			}
+		}
+	}
+
 
 	/** Golden sparks over the rock where it is now: {@code gold} gold glints and {@code bright} brighter ones, flying out at {@code speed}. */
 	private static void sparks(Rock rock, int gold, int bright, double speed, double spread) {
@@ -1468,13 +1480,15 @@ public final class FallenRocks {
 			updateFilter(rock);
 		}
 
+		if (rock.phase == Phase.FALLING) {
+			streak(rock);
+		}
+
 		if (rock.phase == Phase.RISING) {
 			trail(rock);
 		} else if (rock.phase == Phase.HOVER && rock.age % 3 == 0) {
 			sparks(rock, 2, 0, 0.01, 0.4);
 		}
-
-		fxGhosts(rock);
 
 		switch (rock.phase) {
 			case RISING -> rise(rock, cx, cz);
@@ -1514,6 +1528,7 @@ public final class FallenRocks {
 					double y = rock.box.minY() + 0.5;
 					command(rock.level, String.format(Locale.ROOT, "playsound minecraft:block.deepslate.break block @a %.1f %.1f %.1f 4.0 0.6", cx, y, cz));
 					command(rock.level, String.format(Locale.ROOT, "particle minecraft:poof %.2f %.2f %.2f 1.0 0.3 1.0 0.05 30", cx, y, cz));
+					landingWaves(rock);
 					return false;
 				}
 			}

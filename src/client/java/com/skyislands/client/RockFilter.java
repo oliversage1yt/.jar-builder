@@ -23,6 +23,16 @@ import com.skyislands.SkyIslands;
  */
 final class RockFilter {
 	private static final Identifier EFFECT = SkyIslands.id("rock_grayscale");
+	/** The gray spreads out from the middle of the screen in this many steps (one screen effect each), then covers it all. */
+	private static final int STAGES = 8;
+	private static final int STAGE_TICKS = 2;
+	private static final Identifier[] WAVE = new Identifier[STAGES];
+
+	static {
+		for (int i = 0; i < STAGES; i++) {
+			WAVE[i] = SkyIslands.id("rock_grayscale_w" + i);
+		}
+	}
 	/** A flight is over long before this (the server cuts a rise off after 1200 ticks); a missed "off" message cannot leave it on. */
 	private static final int MAX_TICKS = 2000;
 	/** The fallback veil: gray at about two thirds opacity (ARGB). */
@@ -38,6 +48,9 @@ final class RockFilter {
 
 	private static boolean on;
 	private static boolean effectApplied;
+	private static int stage;
+	/** The screen effect that is on now (a step of the spreading gray, or all of it). */
+	private static Identifier target;
 	private static boolean veilFailed;
 	private static int ticks;
 
@@ -60,6 +73,18 @@ final class RockFilter {
 			return;
 		}
 
+		// the gray spreads out from the middle of the screen, step by step
+		if (effectApplied && stage < STAGES && ticks % STAGE_TICKS == 0) {
+			stage++;
+			target = stage < STAGES ? WAVE[stage] : EFFECT;
+
+			try {
+				setEffect.invoke(renderer, target);
+			} catch (Throwable ex) {
+				// the next tick puts it right
+			}
+		}
+
 		// the game clears that slot when the camera changes to another entity: put ours back
 		if (effectApplied && currentEffect != null) {
 			try {
@@ -69,7 +94,7 @@ final class RockFilter {
 					current = optional.orElse(null);
 				}
 
-				if (!EFFECT.equals(current)) {
+				if (!target.equals(current)) {
 					setEffect.invoke(renderer, EFFECT);
 				}
 			} catch (Throwable ex) {
@@ -91,9 +116,11 @@ final class RockFilter {
 		if (wanted) {
 			if (setEffect != null && clearEffect != null) {
 				try {
-					setEffect.invoke(renderer, EFFECT);
+					stage = 0;
+					target = WAVE[0];
+					setEffect.invoke(renderer, target);
 					effectApplied = true;
-					SkyIslands.LOGGER.info("Sky Islands: grayscale screen effect switched on ({})", EFFECT);
+					SkyIslands.LOGGER.info("Sky Islands: grayscale screen effect switched on ({} ... {})", WAVE[0], EFFECT);
 					return;
 				} catch (Throwable ex) {
 					SkyIslands.LOGGER.warn("Sky Islands: the grayscale screen effect could not be switched on, using a gray veil instead: {}", ex.toString());

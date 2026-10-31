@@ -60,6 +60,22 @@ final class RockHighlight {
 	private record Seg(double x0, double y0, double z0, double x1, double y1, double z1, Edge lattice, double cx, double cy, double cz) { }
 
 	private static List<Seg> segs = List.of();
+	/** How many blocks up the outlined rock will go when it is launched. */
+	private static int rise;
+
+	/** A rock as it is drawn: its blocks, the lines of its outline, how far up it goes, and the box around it. */
+	private record Pile(Set<Long> blocks, List<Seg> segs, int rise, double minX, double minY, double minZ, double maxX, double maxY, double maxZ) { }
+
+	/** The camera and the screen, worked out once for each frame. */
+	private record View(Vec3 eye, double[] f, double[] r, double[] u, int width, int height, double tanHalf, double aspect, int thickness) { }
+
+	/** The rock that was launched: its path (the arrow and the translucent copies) stays on screen until it starts to fall. */
+	private static Pile path;
+	private static int pathTicks;
+	/** The translucent golden copies along the path, and the arrow (ARGB). */
+	private static final int GHOST = 0x78FFD700;
+	private static final int ARROW = 0xB8FFD700;
+	private static final int GHOSTS = 5;
 
 	private static final Identifier HUM = SkyIslands.id("rock.recall_hover");
 	private static final float HUM_VOLUME = 0.7F;
@@ -97,13 +113,14 @@ final class RockHighlight {
 	private RockHighlight() { }
 
 	static void register() {
-		ClientPlayNetworking.registerGlobalReceiver(RockHighlightPayload.TYPE, (payload, context) -> set(payload.blocks()));
+		ClientPlayNetworking.registerGlobalReceiver(RockHighlightPayload.TYPE, (payload, context) -> set(payload.blocks(), payload.rise()));
 		HudElementRegistry.addLast(SkyIslands.id("rock_highlight"), (graphics, tickCounter) -> render(graphics, tickCounter));
 
 		UseBlockCallback.EVENT.register((player, world, hand, hit) -> {
 			if (hand == InteractionHand.MAIN_HAND && world instanceof ClientLevel && blocks.contains(hit.getBlockPos().asLong())) {
 				// the outline and the hum go at once (the hum fades out); the launch sound plays once; the server is told to look again
 				playStart();
+				activate();
 				clear();
 				sentHas = false;
 				ClientPlayNetworking.send(new RockHoverPayload(false, 0L));
@@ -119,15 +136,50 @@ final class RockHighlight {
 		Minecraft.getInstance().getSoundManager().play(new FadingSound(START, SoundSource.BLOCKS, START_VOLUME));
 	}
 
-	private static void set(List<Long> list) {
+	private static void set(List<Long> list, int newRise) {
 		blocks = list.isEmpty() ? Set.of() : new HashSet<>(list);
 		segs = buildSegs(blocks);
+		rise = newRise;
 	}
 
 	private static void clear() {
 		if (!blocks.isEmpty()) {
-			set(List.of());
+			set(List.of(), 0);
 		}
+	}
+
+	private static Pile pileOf(Set<Long> set, List<Seg> list, int height) {
+		double minX = Double.MAX_VALUE;
+		double minY = Double.MAX_VALUE;
+		double minZ = Double.MAX_VALUE;
+		double maxX = -Double.MAX_VALUE;
+		double maxY = -Double.MAX_VALUE;
+		double maxZ = -Double.MAX_VALUE;
+
+		for (long packed : set) {
+			BlockPos pos = BlockPos.of(packed);
+			minX = Math.min(minX, pos.getX());
+			minY = Math.min(minY, pos.getY());
+			minZ = Math.min(minZ, pos.getZ());
+			maxX = Math.max(maxX, pos.getX() + 1.0);
+			maxY = Math.max(maxY, pos.getY() + 1.0);
+			maxZ = Math.max(maxZ, pos.getZ() + 1.0);
+		}
+
+		return new Pile(set, list, height, minX, minY, minZ, maxX, maxY, maxZ);
+	}
+
+	/** The rock that is looked at was launched: its path stays on screen (until it starts to fall). */
+	private static void activate() {
+		if (!blocks.isEmpty() && rise > 0) {
+			path = pileOf(blocks, segs, rise);
+			pathTicks = 0;
+		}
+	}
+
+	/** The rock started to fall (or the flight ended): the path goes. */
+	static void endPath() {
+		path = null;
 	}
 
 	private static boolean isRockBlock(BlockState state) {
@@ -139,6 +191,11 @@ final class RockHighlight {
 
 	static void tick(Minecraft client) {
 		LocalPlayer player = client.player;
+
+		if (path != null && (player == null || ++pathTicks > 2000)) {
+			path = null;
+		}
+
 		boolean has = false;
 		long pos = 0L;
 
@@ -289,7 +346,7 @@ final class RockHighlight {
 	}
 
 	/** True when at least one face that this edge belongs to is part of the pile's surface and turned towards the eye. */
-	private static boolean facesCamera(Edge e, Vec3 eye) {
+	private static boolean facesCamera(Set<Long> set, Edge e, Vec3 eye) {
 		int[] lattice = { e.x(), e.y(), e.z() };
 		int a = e.axis();
 
@@ -306,8 +363,8 @@ final class RockHighlight {
 				low[n] -= 1;
 				low[m] += side;
 				high[m] += side;
-				boolean lowOccupied = blocks.contains(BlockPos.asLong(low[0], low[1], low[2]));
-				boolean highOccupied = blocks.contains(BlockPos.asLong(high[0], high[1], high[2]));
+				boolean lowOccupied = set.contains(BlockPos.asLong(low[0], low[1], low[2]));
+				boolean highOccupied = set.contains(BlockPos.asLong(high[0], high[1], high[2]));
 
 				if (lowOccupied == highOccupied) {
 					continue;
@@ -332,7 +389,7 @@ final class RockHighlight {
 	}
 
 	private static void render(Object g, Object tickCounter) {
-		if (blocks.isEmpty() || failed) {
+		if ((blocks.isEmpty() && path == null) || failed) {
 			return;
 		}
 
@@ -440,41 +497,20 @@ final class RockHighlight {
 			double aspect = width / (double) height;
 			int thickness = (int) Math.max(1, Math.round(LINE_PIXELS / Math.max(1.0, mc.getWindow().getGuiScale())));
 
-			for (Seg seg : segs) {
-				if (seg.lattice() != null) {
-					if (!facesCamera(seg.lattice(), eye)) {
-						continue;
-					}
-				} else {
-					// a line on a stair or slab that is not on the cube grid: only the ones on the side turned to the eye
-					double mx = (seg.x0() + seg.x1()) / 2.0;
-					double my = (seg.y0() + seg.y1()) / 2.0;
-					double mz = (seg.z0() + seg.z1()) / 2.0;
+			View view = new View(eye, f, r, u, width, height, tanHalf, aspect, thickness);
 
-					if ((eye.x - mx) * (mx - seg.cx()) + (eye.y - my) * (my - seg.cy()) + (eye.z - mz) * (mz - seg.cz()) < -0.02) {
-						continue;
-					}
+			if (!blocks.isEmpty()) {
+				// the rock that is looked at: a thin golden outline with waves of gold running across it
+				Pile selected = pileOf(blocks, segs, rise);
+				drawPile(g, selected, 0.0, GOLD, true, view);
+
+				if (rise > 0) {
+					drawPath(g, selected, view);
 				}
+			}
 
-				double[] c0 = toCamera(new double[] { seg.x0(), seg.y0(), seg.z0() }, eye, f, r, u);
-				double[] c1 = toCamera(new double[] { seg.x1(), seg.y1(), seg.z1() }, eye, f, r, u);
-
-				// cut the part behind the camera off
-				if (c0[2] < NEAR && c1[2] < NEAR) {
-					continue;
-				}
-
-				if (c0[2] < NEAR) {
-					c0 = lerp(c0, c1, (NEAR - c0[2]) / (c1[2] - c0[2]));
-				} else if (c1[2] < NEAR) {
-					c1 = lerp(c1, c0, (NEAR - c1[2]) / (c0[2] - c1[2]));
-				}
-
-				double x0 = width / 2.0 * (1.0 + c0[0] / (c0[2] * tanHalf * aspect));
-				double y0 = height / 2.0 * (1.0 - c0[1] / (c0[2] * tanHalf));
-				double x1 = width / 2.0 * (1.0 + c1[0] / (c1[2] * tanHalf * aspect));
-				double y1 = height / 2.0 * (1.0 - c1[1] / (c1[2] * tanHalf));
-				line(g, x0, y0, x1, y1, width, height, thickness);
+			if (path != null) {
+				drawPath(g, path, view);
 			}
 		} catch (Throwable ex) {
 			failed = true;
@@ -568,8 +604,99 @@ final class RockHighlight {
 		return new double[] { a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t };
 	}
 
+	/**
+	 * The outline of a rock, {@code dy} blocks above where it is. {@code wave}: the gold brightens and dims in waves that run
+	 * across it. The rock is not moved: the eye is moved down instead, which gives the same picture and keeps the test for
+	 * which lines face the camera the same.
+	 */
+	private static void drawPile(Object g, Pile pile, double dy, int color, boolean wave, View v) throws ReflectiveOperationException {
+		Vec3 eye = new Vec3(v.eye().x, v.eye().y - dy, v.eye().z);
+		double time = System.nanoTime() / 1.0E9;
+
+		for (Seg seg : pile.segs()) {
+			if (seg.lattice() != null) {
+				if (!facesCamera(pile.blocks(), seg.lattice(), eye)) {
+					continue;
+				}
+			} else {
+				// a line on a stair or slab that is not on the cube grid: only the ones on the side turned to the eye
+				double mx = (seg.x0() + seg.x1()) / 2.0;
+				double my = (seg.y0() + seg.y1()) / 2.0;
+				double mz = (seg.z0() + seg.z1()) / 2.0;
+
+				if ((eye.x - mx) * (mx - seg.cx()) + (eye.y - my) * (my - seg.cy()) + (eye.z - mz) * (mz - seg.cz()) < -0.02) {
+					continue;
+				}
+			}
+
+			int lineColor = color;
+
+			if (wave) {
+				// a wave that runs across the rock (diagonally, over x, y and z), a little over once a second
+				double mid = (seg.x0() + seg.x1() + seg.y0() + seg.y1() + seg.z0() + seg.z1()) / 2.0;
+				double level = 0.5 + 0.5 * Math.sin(time * 5.0 - mid * 0.9);
+				int alpha = (int) Math.round(255.0 * (0.45 + 0.55 * level));
+				lineColor = (alpha << 24) | (color & 0xFFFFFF);
+			}
+
+			worldLine(g, v, eye, seg.x0(), seg.y0(), seg.z0(), seg.x1(), seg.y1(), seg.z1(), lineColor);
+		}
+	}
+
+	/** The path of a rock: translucent golden copies of it, evenly spread along the way up, and a golden arrow pointing up it. */
+	private static void drawPath(Object g, Pile pile, View v) throws ReflectiveOperationException {
+		for (int k = 1; k <= GHOSTS; k++) {
+			drawPile(g, pile, pile.rise() * (double) k / GHOSTS, GHOST, false, v);
+		}
+
+		double cx = (pile.minX() + pile.maxX()) / 2.0;
+		double cz = (pile.minZ() + pile.maxZ()) / 2.0;
+		double from = pile.maxY();
+		double to = pile.maxY() + pile.rise();
+		worldLine(g, v, v.eye(), cx, from, cz, cx, to, cz, ARROW);
+
+		// the arrow heads, one between each two copies, all pointing up
+		double rx = v.r()[0];
+		double rz = v.r()[2];
+		double length = Math.max(1.0E-6, Math.sqrt(rx * rx + rz * rz));
+		rx /= length;
+		rz /= length;
+
+		for (int k = 0; k < GHOSTS; k++) {
+			double y = from + pile.rise() * (k + 0.5) / GHOSTS;
+			double distance = Math.sqrt(Math.pow(cx - v.eye().x, 2) + Math.pow(y - v.eye().y, 2) + Math.pow(cz - v.eye().z, 2));
+			// about the same size on the screen whatever the distance
+			double size = Math.max(0.7, distance * 0.025);
+			worldLine(g, v, v.eye(), cx, y + size, cz, cx - rx * size * 0.8, y - size * 0.4, cz - rz * size * 0.8, ARROW);
+			worldLine(g, v, v.eye(), cx, y + size, cz, cx + rx * size * 0.8, y - size * 0.4, cz + rz * size * 0.8, ARROW);
+		}
+	}
+
+	/** One line between two points of the world, on the screen. */
+	private static void worldLine(Object g, View v, Vec3 eye, double ax, double ay, double az, double bx, double by, double bz, int color) throws ReflectiveOperationException {
+		double[] c0 = toCamera(new double[] { ax, ay, az }, eye, v.f(), v.r(), v.u());
+		double[] c1 = toCamera(new double[] { bx, by, bz }, eye, v.f(), v.r(), v.u());
+
+		// cut the part behind the camera off
+		if (c0[2] < NEAR && c1[2] < NEAR) {
+			return;
+		}
+
+		if (c0[2] < NEAR) {
+			c0 = lerp(c0, c1, (NEAR - c0[2]) / (c1[2] - c0[2]));
+		} else if (c1[2] < NEAR) {
+			c1 = lerp(c1, c0, (NEAR - c1[2]) / (c0[2] - c1[2]));
+		}
+
+		double x0 = v.width() / 2.0 * (1.0 + c0[0] / (c0[2] * v.tanHalf() * v.aspect()));
+		double y0 = v.height() / 2.0 * (1.0 - c0[1] / (c0[2] * v.tanHalf()));
+		double x1 = v.width() / 2.0 * (1.0 + c1[0] / (c1[2] * v.tanHalf() * v.aspect()));
+		double y1 = v.height() / 2.0 * (1.0 - c1[1] / (c1[2] * v.tanHalf()));
+		line(g, x0, y0, x1, y1, v.width(), v.height(), v.thickness(), color);
+	}
+
 	/** A line made of filled rectangles: one per run of pixels that share a row (or a column, for steep lines). */
-	private static void line(Object g, double x0, double y0, double x1, double y1, int width, int height, int t) throws ReflectiveOperationException {
+	private static void line(Object g, double x0, double y0, double x1, double y1, int width, int height, int t, int color) throws ReflectiveOperationException {
 		// keep it near the screen so a line that starts far away does not take thousands of steps
 		double[] clipped = clip(x0, y0, x1, y1, -4.0, -4.0, width + 4.0, height + 4.0);
 
@@ -586,7 +713,7 @@ final class RockHighlight {
 		int steps = (int) Math.ceil(Math.max(Math.abs(dx), Math.abs(dy)));
 
 		if (steps <= 0) {
-			run(g, true, (int) Math.round(x0), (int) Math.round(x0), (int) Math.round(y0), t);
+			run(g, true, (int) Math.round(x0), (int) Math.round(x0), (int) Math.round(y0), t, color);
 			return;
 		}
 
@@ -601,7 +728,7 @@ final class RockHighlight {
 			int across = (int) Math.round(wide ? y0 + dy * s : x0 + dx * s);
 
 			if (across != runAcross) {
-				run(g, wide, runStart, prevAlong, runAcross, t);
+				run(g, wide, runStart, prevAlong, runAcross, t, color);
 				runStart = along;
 				runAcross = across;
 			}
@@ -609,18 +736,18 @@ final class RockHighlight {
 			prevAlong = along;
 		}
 
-		run(g, wide, runStart, prevAlong, runAcross, t);
+		run(g, wide, runStart, prevAlong, runAcross, t, color);
 	}
 
-	private static void run(Object g, boolean wide, int from, int to, int across, int t) throws ReflectiveOperationException {
+	private static void run(Object g, boolean wide, int from, int to, int across, int t, int color) throws ReflectiveOperationException {
 		int lo = Math.min(from, to);
 		int hi = Math.max(from, to);
 		int half = t / 2;
 
 		if (wide) {
-			fillMethod.invoke(g, lo - half, across - half, hi + t - half, across + t - half, GOLD);
+			fillMethod.invoke(g, lo - half, across - half, hi + t - half, across + t - half, color);
 		} else {
-			fillMethod.invoke(g, across - half, lo - half, across + t - half, hi + t - half, GOLD);
+			fillMethod.invoke(g, across - half, lo - half, across + t - half, hi + t - half, color);
 		}
 	}
 

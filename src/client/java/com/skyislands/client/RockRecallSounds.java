@@ -45,9 +45,15 @@ final class RockRecallSounds {
 
 		switch (event) {
 			case RockRecallPayload.RISE -> startPerform(mc);
-			case RockRecallPayload.PEAK, RockRecallPayload.END -> fadePerform();
+			case RockRecallPayload.PEAK -> fadePerform();
+			case RockRecallPayload.END -> {
+				fadePerform();
+				RockHighlight.endPath();
+			}
 			case RockRecallPayload.FALL -> {
 				fadePerform();
+				// the golden path (the arrow and the copies of the rock) goes when the rock starts to fall
+				RockHighlight.endPath();
 				mc.getSoundManager().play(new FadingSound(FINISH, SoundSource.BLOCKS, FINISH_VOLUME));
 			}
 			default -> { }
