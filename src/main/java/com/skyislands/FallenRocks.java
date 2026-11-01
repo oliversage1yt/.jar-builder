@@ -12,7 +12,9 @@ import java.util.Map;
 import java.util.Queue;
 import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentLinkedQueue;
+import java.lang.reflect.Proxy;
 
 import net.fabricmc.fabric.api.event.lifecycle.v1.ServerChunkEvents;
 import net.fabricmc.fabric.api.event.lifecycle.v1.ServerEntityEvents;
@@ -108,6 +110,8 @@ public final class FallenRocks {
 	private static final double FALL_MAX_SPEED = 4.0;
 	/** A rock is dropped to the ground at once when no player is within this many blocks (its chunks could unload). */
 	private static final double KEEP_ALIVE_RANGE = 160.0;
+	/** A rock that is generated near a player falls into place from this many blocks up. */
+	private static final int INTRO_HEIGHT = 50;
 	/** Chunks checked per tick after generation, and how many times a chunk is tried again while its neighbours are missing. */
 	/** A rock that is covered at generation is moved to a clear spot at most this many blocks away. */
 	private static final int RELOCATE_RADIUS = 10;
@@ -155,6 +159,8 @@ public final class FallenRocks {
 		final Map<UUID, Double> lastY = new HashMap<>();
 		double fallDistance;
 		double fallSpeed;
+		/** A rock that falls into place when its chunk is generated (not one a player launched). */
+		boolean intro;
 		/** Players who currently see the grayscale filter of this rock. */
 		final Set<UUID> filtered = new HashSet<>();
 		/** Creatures this rock has already hit on its way down (each one is hit once). */
@@ -164,6 +170,9 @@ public final class FallenRocks {
 		List<String> fxStates;
 		boolean halo;
 		int haloDy;
+		/** The beam of light behind a falling rock, and how high up it was last put. */
+		boolean beam;
+		int beamDy;
 
 		Rock(ServerLevel level, BoundingBox box, long key, List<Cell> cells) {
 			this.level = level;
@@ -201,11 +210,19 @@ public final class FallenRocks {
 	private static Boolean fxEnlarged;
 	private static boolean fxVerified;
 	private static boolean fxBroken;
+	private static boolean fxBeamBroken;
+	private static boolean fxBeamVerified;
+	/** How tall the beam of light behind a falling rock is. */
+	private static final double BEAM_LENGTH = 28.0;
 	/** Rocks that were seen with a block missing or added (until the server stops). */
 	private static final Set<Long> DEAD = new HashSet<>();
 	private static final Map<Long, Integer> COOLDOWN = new HashMap<>();
 	/** Chunks that have just been generated. As in GroundFreezer, the event itself must not touch the level. */
 	private static final Queue<Generated> QUEUE = new ConcurrentLinkedQueue<>();
+	/** Chunks that were loaded again (after being unloaded): their rocks fall into place once more. */
+	private static final Queue<Generated> RELOAD_QUEUE = new ConcurrentLinkedQueue<>();
+	/** Chunks just generated: their first load is not a reload (the rocks in them are dealt with after being generated). */
+	private static final Set<Long> JUST_GENERATED = ConcurrentHashMap.newKeySet();
 	private static boolean disabled;
 	private static boolean unknownShapeLogged;
 
@@ -213,6 +230,7 @@ public final class FallenRocks {
 
 	public static void register() {
 		ServerChunkEvents.CHUNK_GENERATE.register(FallenRocks::onGenerate);
+		registerChunkLoad();
 		ServerTickEvents.END_SERVER_TICK.register(FallenRocks::tick);
 		ServerLifecycleEvents.SERVER_STOPPING.register(FallenRocks::restoreAll);
 		PayloadTypeRegistry.serverboundPlay().register(RockHoverPayload.TYPE, RockHoverPayload.CODEC);
@@ -237,12 +255,55 @@ public final class FallenRocks {
 		DEAD.clear();
 		COOLDOWN.clear();
 		QUEUE.clear();
+		RELOAD_QUEUE.clear();
+		JUST_GENERATED.clear();
 	}
 
 	private static void onGenerate(ServerLevel level, LevelChunk chunk) {
 		if (!disabled && Level.OVERWORLD.equals(level.dimension())) {
+			JUST_GENERATED.add(chunk.getPos().toLong());
 			QUEUE.add(new Generated(level, chunk.getPos(), 0));
 		}
+	}
+
+	/**
+	 * A chunk is loaded (from disk, after having been unloaded): the rocks in it fall into place again. The event's method differs
+	 * between versions of the Fabric API (some pass whether the chunk is new), so it is listened to through a proxy that takes
+	 * whatever it is given.
+	 */
+	private static void registerChunkLoad() {
+		try {
+			Object listener = Proxy.newProxyInstance(FallenRocks.class.getClassLoader(), new Class<?>[] {ServerChunkEvents.Load.class}, (proxy, method, args) -> {
+				if (method.getDeclaringClass() == Object.class) {
+					return switch (method.getName()) {
+						case "equals" -> proxy == args[0];
+						case "hashCode" -> System.identityHashCode(proxy);
+						default -> "Sky Islands fallen rock chunk listener";
+					};
+				}
+
+				if (args != null && args.length >= 2 && args[0] instanceof ServerLevel level && args[1] instanceof LevelChunk chunk) {
+					boolean generated = args.length >= 3 && args[2] instanceof Boolean flag && flag;
+					onLoad(level, chunk, generated);
+				}
+
+				return null;
+			});
+			ServerChunkEvents.CHUNK_LOAD.register((ServerChunkEvents.Load) listener);
+		} catch (Throwable t) {
+			SkyIslands.LOGGER.warn("Sky Islands: fallen rocks will not fall into place again when their chunks are reloaded: {}", t.toString());
+		}
+	}
+
+	private static void onLoad(ServerLevel level, LevelChunk chunk, boolean generated) {
+		long pos = chunk.getPos().toLong();
+
+		// the first load of a chunk that was just generated is not a reload
+		if (JUST_GENERATED.remove(pos) || generated || disabled || !Level.OVERWORLD.equals(level.dimension()) || chunk.getAllStarts().isEmpty()) {
+			return;
+		}
+
+		RELOAD_QUEUE.add(new Generated(level, chunk.getPos(), 0));
 	}
 
 	/** Server stopping: every rock that is up in the air is put back on the ground, so none is saved floating. */
@@ -269,6 +330,7 @@ public final class FallenRocks {
 		try {
 			int now = server.getTickCount();
 			processGenerated();
+			processReloaded();
 			advanceRocks(now);
 			updateHover(server, now);
 		} catch (Throwable t) {
@@ -276,10 +338,67 @@ public final class FallenRocks {
 			SkyIslands.LOGGER.error("Sky Islands fallen rocks failed and were disabled for this session", t);
 			restoreAll(server);
 			QUEUE.clear();
+			RELOAD_QUEUE.clear();
 		}
 	}
 
 	// ---------------------------------------------------------------- generation: no rock under anything
+
+	/** The rocks of a chunk that was loaded again fall into place once more (they are not moved or repaired: only dropped from the sky). */
+	private static void processReloaded() {
+		for (int i = 0; i < GEN_PER_TICK; i++) {
+			Generated next = RELOAD_QUEUE.poll();
+
+			if (next == null) {
+				return;
+			}
+
+			ServerLevel level = next.level;
+			BlockPos corner = new BlockPos(next.pos.getMinBlockX(), 64, next.pos.getMinBlockZ());
+
+			if (!level.hasChunkAt(corner)) {
+				// unloaded again already
+				continue;
+			}
+
+			boolean again = false;
+			LevelChunk chunk = level.getChunkAt(corner);
+
+			for (StructureStart start : chunk.getAllStarts().values()) {
+				if (!start.isValid()) {
+					continue;
+				}
+
+				BoundingBox pieces = pieceBox(start);
+
+				if (pieces == null) {
+					continue;
+				}
+
+				BlockPos center = new BlockPos((pieces.minX() + pieces.maxX()) / 2, (pieces.minY() + pieces.maxY()) / 2, (pieces.minZ() + pieces.maxZ()) / 2);
+				StructureStart found = level.structureManager().getStructureWithPieceAt(center, ROCKS);
+
+				if (!found.isValid() || pieceBox(found) == null || !sameBox(pieceBox(found), pieces)) {
+					continue;
+				}
+
+				if (!columnsLoaded(level, pieces)) {
+					again = true;
+					continue;
+				}
+
+				BoundingBox box = actualBox(level, pieces);
+
+				if (box != null && findBlocker(level, box) == null) {
+					introFall(level, box);
+				}
+			}
+
+			if (again && next.tries < GEN_MAX_TRIES) {
+				RELOAD_QUEUE.add(new Generated(level, next.pos, next.tries + 1));
+			}
+		}
+	}
 
 	private static void processGenerated() {
 		for (int i = 0; i < GEN_PER_TICK; i++) {
@@ -345,6 +464,8 @@ public final class FallenRocks {
 				BlockPos blocker = findBlocker(level, box);
 
 				if (blocker == null) {
+					// the rock is fine where it is: it falls into place if somebody is near to see it
+					introFall(level, box);
 					continue;
 				}
 
@@ -1199,27 +1320,83 @@ public final class FallenRocks {
 		}
 	}
 
+	/** The beam of light behind a falling rock (seen from much further than particles are): put on when the rock starts to fall. */
+	private static void fxBeamOn(Rock rock) {
+		if (fxBeamBroken || rock.beam) {
+			return;
+		}
+
+		double w = rock.box.maxX() - rock.box.minX() + 1;
+		double d = rock.box.maxZ() - rock.box.minZ() + 1;
+		double cx = rock.box.minX() + w / 2.0;
+		double cz = rock.box.minZ() + d / 2.0;
+		double top = rock.box.maxY() + rock.dy + 1;
+		String tag = rock.fxTag + "_beam";
+		command(rock.level, RockFx.summonBeam(cx - w * 0.35, top, cz - d * 0.35, RockFx.plainState("minecraft:light_blue_stained_glass"),
+				List.of(RockFx.TAG, rock.fxTag, tag), w * 0.7, d * 0.7, BEAM_LENGTH));
+
+		if (!fxBeamVerified) {
+			// the commands say nothing when they fail: look for what they should have made
+			AABB around = new AABB(cx - 4, top - 2, cz - 4, cx + 4, top + BEAM_LENGTH + 2, cz + 4);
+
+			if (rock.level.getEntitiesOfClass(Entity.class, around, e -> ArenaBoss.tagsOf(e).contains(tag)).isEmpty()) {
+				fxBeamBroken = true;
+				SkyIslands.LOGGER.warn("Sky Islands: the beam of light behind a falling rock could not be made (the game did not accept the block display); only particles are used");
+				return;
+			}
+
+			fxBeamVerified = true;
+			SkyIslands.LOGGER.info("Sky Islands: the beam of light behind a falling rock works");
+		}
+
+		rock.beam = true;
+		rock.beamDy = rock.dy;
+	}
+
+	/** The beam follows the rock down. */
+	private static void fxBeamFollow(Rock rock) {
+		if (!rock.beam || rock.dy == rock.beamDy) {
+			return;
+		}
+
+		rock.beamDy = rock.dy;
+		double w = rock.box.maxX() - rock.box.minX() + 1;
+		double d = rock.box.maxZ() - rock.box.minZ() + 1;
+		command(rock.level, RockFx.teleport(rock.fxTag + "_beam", rock.box.minX() + w * 0.15, rock.box.maxY() + rock.dy + 1, rock.box.minZ() + d * 0.15));
+	}
+
 	/** Removes every golden copy of this rock. */
 	private static void fxClear(Rock rock) {
-		if (rock.halo) {
+		if (rock.halo || rock.beam) {
 			command(rock.level, RockFx.kill(rock.fxTag));
 		}
 
 		rock.halo = false;
+		rock.beam = false;
 	}
 
 	// ---------------------------------------------------------------- the golden light (the look of a recall)
 
-	/** The blue streak that follows a falling rock: a column of cold blue flame above it, longer the faster it falls. */
+	/**
+	 * The blue streak that follows a falling rock: a column of cold blue flame, sparks and teal glints above it, longer the faster
+	 * it falls. These are sent with "force", so players see them from up to 512 blocks away instead of 32.
+	 */
 	private static void streak(Rock rock) {
 		double w = rock.box.maxX() - rock.box.minX() + 1;
 		double d = rock.box.maxZ() - rock.box.minZ() + 1;
 		double cx = rock.box.minX() + w / 2.0;
 		double cz = rock.box.minZ() + d / 2.0;
 		double top = rock.box.maxY() + rock.dy + 1;
-		double length = 6.0 + rock.fallSpeed * 3.0;
-		rock.level.sendParticles(ParticleTypes.SOUL_FIRE_FLAME, cx, top + length / 2.0, cz, 16, w / 3.0, length / 2.0, d / 3.0, 0.0);
-		rock.level.sendParticles(ParticleTypes.ELECTRIC_SPARK, cx, top + length / 2.0, cz, 4, w / 3.0, length / 2.0, d / 3.0, 0.0);
+		double length = 10.0 + rock.fallSpeed * 4.0;
+		double cy = top + length / 2.0;
+		forceParticles(rock.level, "soul_fire_flame", cx, cy, cz, w / 3.0, length / 2.0, d / 3.0, 0.0, 30);
+		forceParticles(rock.level, "electric_spark", cx, cy, cz, w / 3.0, length / 2.0, d / 3.0, 0.0, 8);
+		forceParticles(rock.level, "glow", cx, cy, cz, w / 3.0, length / 2.0, d / 3.0, 0.0, 6);
+	}
+
+	/** Particles that players see from far away (the "force" of the particle command: up to 512 blocks). */
+	private static void forceParticles(ServerLevel level, String type, double x, double y, double z, double dx, double dy, double dz, double speed, int count) {
+		command(level, String.format(Locale.ROOT, "particle minecraft:%s %.2f %.2f %.2f %.2f %.2f %.2f %.3f %d force @a", type, x, y, z, dx, dy, dz, speed, count));
 	}
 
 	/** When a rock hits the ground: waves of blue and green spread out from it along the ground, one ring after the other. */
@@ -1374,7 +1551,7 @@ public final class FallenRocks {
 	/** Tells the player who launched the rock which stage of its flight it is in (for the sounds on their client). */
 	private static void notifyDriver(Rock rock, int event) {
 		if (rock.driver != null && rock.level.getPlayerByUUID(rock.driver) instanceof ServerPlayer driver) {
-			ServerPlayNetworking.send(driver, new RockRecallPayload(event));
+			ServerPlayNetworking.send(driver, new RockRecallPayload(event, rock.dy));
 		}
 	}
 
@@ -1449,10 +1626,54 @@ public final class FallenRocks {
 					shift(rock, 0);
 				}
 
-				COOLDOWN.put(rock.key, now + COOLDOWN_TICKS);
+				if (!rock.intro) {
+					COOLDOWN.put(rock.key, now + COOLDOWN_TICKS);
+				}
+
 				it.remove();
 			}
 		}
+	}
+
+	/**
+	 * A rock that has just been generated near a player is lifted {@value #INTRO_HEIGHT} blocks up and falls into place, like the ones
+	 * in the sky do (with the blue streak, the crushing and the waves on landing). If nobody is near it stays where it is.
+	 */
+	private static void introFall(ServerLevel level, BoundingBox box) {
+		long key = BlockPos.asLong(box.minX(), box.minY(), box.minZ());
+
+		if (ACTIVE.containsKey(key) || DEAD.contains(key)) {
+			return;
+		}
+
+		double cx = (box.minX() + box.maxX() + 1) / 2.0;
+		double cz = (box.minZ() + box.maxZ() + 1) / 2.0;
+		boolean watched = false;
+
+		for (ServerPlayer player : level.players()) {
+			double dx = player.getX() - cx;
+			double dz = player.getZ() - cz;
+
+			if (dx * dx + dz * dz < KEEP_ALIVE_RANGE * KEEP_ALIVE_RANGE) {
+				watched = true;
+				break;
+			}
+		}
+
+		List<Cell> cells = readCells(level, box);
+
+		// only a whole rock falls in; the way above it has been checked to be clear
+		if (!watched || cells.size() != expectedBlocks(box)) {
+			return;
+		}
+
+		Rock rock = new Rock(level, box, key, cells);
+		rock.intro = true;
+		rock.phase = Phase.FALLING;
+		rock.total = INTRO_HEIGHT;
+		ACTIVE.put(key, rock);
+		shift(rock, INTRO_HEIGHT);
+		fxBeamOn(rock);
 	}
 
 	/** Returns false when the rock is back on the ground and finished. */
@@ -1510,6 +1731,7 @@ public final class FallenRocks {
 					clearFilter(rock);
 					sparks(rock, 90, 25, 0.35, 0.3);
 					fxHaloOff(rock);
+					fxBeamOn(rock);
 					rock.struck.clear();
 					rock.fallDistance = 0.0;
 					rock.fallSpeed = 0.0;
@@ -1526,7 +1748,7 @@ public final class FallenRocks {
 
 				if (rock.dy <= 0) {
 					double y = rock.box.minY() + 0.5;
-					command(rock.level, String.format(Locale.ROOT, "playsound minecraft:block.deepslate.break block @a %.1f %.1f %.1f 4.0 0.6", cx, y, cz));
+					command(rock.level, String.format(Locale.ROOT, "playsound minecraft:block.deepslate.break block @a %.1f %.1f %.1f %.1f 0.6", cx, y, cz, rock.intro ? 2.0 : 4.0));
 					command(rock.level, String.format(Locale.ROOT, "particle minecraft:poof %.2f %.2f %.2f 1.0 0.3 1.0 0.05 30", cx, y, cz));
 					landingWaves(rock);
 					return false;
@@ -1534,7 +1756,12 @@ public final class FallenRocks {
 			}
 		}
 
+		if (rock.phase == Phase.RISING) {
+			notifyDriver(rock, RockRecallPayload.PROGRESS);
+		}
+
 		fxFollow(rock);
+		fxBeamFollow(rock);
 		return true;
 	}
 

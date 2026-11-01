@@ -17,6 +17,8 @@ final class RockFx {
 	static final String TAG = "sky_islands_fx";
 	/** The colour of the glow: a warm gold. */
 	private static final int GOLD = 0xFFD24A;
+	/** The colour of the blue streak behind a falling rock: a bright cyan. */
+	private static final int CYAN = 0x35D9FF;
 	private static final Pattern STATE = Pattern.compile("^Block\\{([^}]*)\\}(?:\\[(.*)\\])?$");
 	private static final String IDENTITY = "left_rotation:[0f,0f,0f,1f],right_rotation:[0f,0f,0f,1f]";
 
@@ -67,6 +69,32 @@ final class RockFx {
 		return String.format(Locale.ROOT,
 				"summon minecraft:block_display %.3f %.3f %.3f {block_state:%s,Tags:[%s],Glowing:1b,glow_color_override:%d,brightness:{sky:15,block:15},teleport_duration:1%s}",
 				x, y, z, blockState, list, GOLD, transformation);
+	}
+
+	/** The block_state data of a block without properties. */
+	static String plainState(String id) {
+		return "{id:\"" + id + "\",Name:\"" + id + "\"}";
+	}
+
+	/**
+	 * Summons the beam of light behind a falling rock: one tall, thin, glowing column of translucent glass. It is an entity, and
+	 * its view range is raised, so it is seen from much further away than a particle can be (as far as the game tracks it).
+	 */
+	static String summonBeam(double x, double y, double z, String blockState, List<String> tags, double width, double depth, double length) {
+		StringBuilder list = new StringBuilder();
+
+		for (String tag : tags) {
+			if (list.length() > 0) {
+				list.append(',');
+			}
+
+			list.append('"').append(tag).append('"');
+		}
+
+		return String.format(Locale.ROOT,
+				"summon minecraft:block_display %.3f %.3f %.3f {block_state:%s,Tags:[%s],Glowing:1b,glow_color_override:%d,brightness:{sky:15,block:15},teleport_duration:1,view_range:2.6f,"
+						+ "transformation:{%s,scale:[%.3ff,%.3ff,%.3ff],translation:[0f,0f,0f]}}",
+				x, y, z, blockState, list, CYAN, IDENTITY, width, length, depth);
 	}
 
 	static String teleport(String tag, double x, double y, double z) {

@@ -72,6 +72,8 @@ final class RockHighlight {
 	/** The rock that was launched: its path (the arrow and the translucent copies) stays on screen until it starts to fall. */
 	private static Pile path;
 	private static int pathTicks;
+	/** How many blocks up the launched rock is: the path markers it has passed are gone. */
+	private static int pathProgress;
 	/** The translucent golden copies along the path, and the arrow (ARGB). */
 	private static final int GHOST = 0x78FFD700;
 	private static final int ARROW = 0xB8FFD700;
@@ -174,7 +176,13 @@ final class RockHighlight {
 		if (!blocks.isEmpty() && rise > 0) {
 			path = pileOf(blocks, segs, rise);
 			pathTicks = 0;
+			pathProgress = 0;
 		}
+	}
+
+	/** The launched rock is this high now: the markers it has passed are taken away. */
+	static void pathProgress(int dy) {
+		pathProgress = dy;
 	}
 
 	/** The rock started to fall (or the flight ended): the path goes. */
@@ -505,12 +513,12 @@ final class RockHighlight {
 				drawPile(g, selected, 0.0, GOLD, true, view);
 
 				if (rise > 0) {
-					drawPath(g, selected, view);
+					drawPath(g, selected, view, 0);
 				}
 			}
 
 			if (path != null) {
-				drawPath(g, path, view);
+				drawPath(g, path, view, pathProgress);
 			}
 		} catch (Throwable ex) {
 			failed = true;
@@ -643,17 +651,30 @@ final class RockHighlight {
 		}
 	}
 
-	/** The path of a rock: translucent golden copies of it, evenly spread along the way up, and a golden arrow pointing up it. */
-	private static void drawPath(Object g, Pile pile, View v) throws ReflectiveOperationException {
+	/**
+	 * The path of a rock: translucent golden copies of it, evenly spread along the way up, and a golden arrow pointing up it.
+	 * {@code progress}: how far up the rock already is; what it has passed is not drawn, so nothing is left behind it.
+	 */
+	private static void drawPath(Object g, Pile pile, View v, int progress) throws ReflectiveOperationException {
+		double height = pile.maxY() - pile.minY();
+
 		for (int k = 1; k <= GHOSTS; k++) {
-			drawPile(g, pile, pile.rise() * (double) k / GHOSTS, GHOST, false, v);
+			double dy = pile.rise() * (double) k / GHOSTS;
+
+			// the copy is gone as the rock reaches it
+			if (progress + height * 0.5 < dy) {
+				drawPile(g, pile, dy, GHOST, false, v);
+			}
 		}
 
 		double cx = (pile.minX() + pile.maxX()) / 2.0;
 		double cz = (pile.minZ() + pile.maxZ()) / 2.0;
-		double from = pile.maxY();
+		double from = pile.maxY() + Math.max(0, Math.min(progress, pile.rise()));
 		double to = pile.maxY() + pile.rise();
-		worldLine(g, v, v.eye(), cx, from, cz, cx, to, cz, ARROW);
+
+		if (from < to - 0.5) {
+			worldLine(g, v, v.eye(), cx, from, cz, cx, to, cz, ARROW);
+		}
 
 		// the arrow heads, one between each two copies, all pointing up
 		double rx = v.r()[0];
@@ -663,7 +684,12 @@ final class RockHighlight {
 		rz /= length;
 
 		for (int k = 0; k < GHOSTS; k++) {
-			double y = from + pile.rise() * (k + 0.5) / GHOSTS;
+			double y = pile.maxY() + pile.rise() * (k + 0.5) / GHOSTS;
+
+			if (y <= from + 0.5) {
+				continue;
+			}
+
 			double distance = Math.sqrt(Math.pow(cx - v.eye().x, 2) + Math.pow(y - v.eye().y, 2) + Math.pow(cz - v.eye().z, 2));
 			// about the same size on the screen whatever the distance
 			double size = Math.max(0.7, distance * 0.025);

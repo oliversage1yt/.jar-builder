@@ -37,15 +37,20 @@ final class RockRecallSounds {
 	private RockRecallSounds() { }
 
 	static void register() {
-		ClientPlayNetworking.registerGlobalReceiver(RockRecallPayload.TYPE, (payload, context) -> handle(payload.event()));
+		ClientPlayNetworking.registerGlobalReceiver(RockRecallPayload.TYPE, (payload, context) -> handle(payload.event(), payload.value()));
 	}
 
-	private static void handle(int event) {
+	private static void handle(int event, int value) {
 		Minecraft mc = Minecraft.getInstance();
 
 		switch (event) {
 			case RockRecallPayload.RISE -> startPerform(mc);
-			case RockRecallPayload.PEAK -> fadePerform();
+			case RockRecallPayload.PROGRESS -> RockHighlight.pathProgress(value);
+			case RockRecallPayload.PEAK -> {
+				fadePerform();
+				// the rock has reached the top: nothing of the path is left behind it
+				RockHighlight.pathProgress(Integer.MAX_VALUE);
+			}
 			case RockRecallPayload.END -> {
 				fadePerform();
 				RockHighlight.endPath();
