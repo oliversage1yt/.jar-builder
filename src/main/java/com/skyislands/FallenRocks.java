@@ -60,7 +60,7 @@ import net.minecraft.world.phys.BlockHitResult;
 /**
  * Fallen rocks (structures sky_islands:fallen_rock_1..4, tag sky_islands:fallen_rocks): small piles of deepslate that lie on
  * the ground. Look at one (within normal block reach) and it gets a golden outline; right click it and it is recalled, like
- * the fallen sky island rocks in Tears of the Kingdom: the whole pile (real blocks) rises with you up to Y=430, hangs there
+ * the fallen sky island rocks in Tears of the Kingdom: the whole pile (real blocks) rises with you up to Y=520, hangs there
  * for a moment so you can run off and glide to a nearby island, then falls back down and becomes the same pile of rocks
  * again. After it has come down it has a short cooldown, during which it has no outline and cannot be launched.
  *
@@ -92,7 +92,7 @@ public final class FallenRocks {
 	private static final float IMPACT_DAMAGE = 38.0F;
 
 	/** The rock rises until the player standing on it is at this height. */
-	private static final int TARGET_Y = 430;
+	private static final int TARGET_Y = 520;
 	/** How long the rock stays at the top (8 seconds). */
 	private static final int HOVER_TICKS = 160;
 	/** After a rock has come down it cannot be recalled again for this long. */
@@ -106,8 +106,8 @@ public final class FallenRocks {
 	/** Setting blocks without neighbour shape updates (2 = send to clients, 16 = no shape update), so stairs keep their shape. */
 	private static final int SET_FLAGS = 2 | 16;
 	/** The fall of the rock speeds up by this much per tick, to at most FALL_MAX_SPEED blocks per tick. */
-	private static final double FALL_ACCELERATION = 0.2;
-	private static final double FALL_MAX_SPEED = 4.0;
+	private static final double FALL_ACCELERATION = 0.1;
+	private static final double FALL_MAX_SPEED = 2.0;
 	/** A rock is dropped to the ground at once when no player is within this many blocks (its chunks could unload). */
 	private static final double KEEP_ALIVE_RANGE = 160.0;
 	/** A rock that is generated near a player falls into place from this many blocks up. */
@@ -161,6 +161,8 @@ public final class FallenRocks {
 		double fallSpeed;
 		/** A rock that falls into place when its chunk is generated (not one a player launched). */
 		boolean intro;
+		/** Put back on the ground because nobody was near it any more. */
+		boolean abandoned;
 		/** Players who currently see the grayscale filter of this rock. */
 		final Set<UUID> filtered = new HashSet<>();
 		/** Creatures this rock has already hit on its way down (each one is hit once). */
@@ -219,6 +221,12 @@ public final class FallenRocks {
 	private static final Map<Long, Integer> COOLDOWN = new HashMap<>();
 	/** Chunks that have just been generated. As in GroundFreezer, the event itself must not touch the level. */
 	private static final Queue<Generated> QUEUE = new ConcurrentLinkedQueue<>();
+	/** A rock that was put on the ground because nobody was near, and how high up it was: it falls again from there when somebody comes back. */
+	private record Pending(ServerLevel level, BoundingBox box, int height) { }
+
+	private static final Map<Long, Pending> PENDING = new HashMap<>();
+	/** A player this close to such a rock makes it fall again. */
+	private static final double PENDING_RANGE = 150.0;
 	/** Chunks that were loaded again (after being unloaded): their rocks fall into place once more. */
 	private static final Queue<Generated> RELOAD_QUEUE = new ConcurrentLinkedQueue<>();
 	/** Chunks just generated: their first load is not a reload (the rocks in them are dealt with after being generated). */
@@ -252,6 +260,7 @@ public final class FallenRocks {
 		ACTIVE.clear();
 		HOVER.clear();
 		FILTER.clear();
+		PENDING.clear();
 		DEAD.clear();
 		COOLDOWN.clear();
 		QUEUE.clear();
@@ -336,6 +345,11 @@ public final class FallenRocks {
 			int now = server.getTickCount();
 			processGenerated();
 			processReloaded();
+
+			if (now % 20 == 0) {
+				processPending();
+			}
+
 			advanceRocks(now);
 			updateHover(server, now);
 		} catch (Throwable t) {
@@ -1337,8 +1351,15 @@ public final class FallenRocks {
 		double cz = rock.box.minZ() + d / 2.0;
 		double top = rock.box.maxY() + rock.dy + 1;
 		String tag = rock.fxTag + "_beam";
+		double shellW = w * 0.7;
+		double shellD = d * 0.7;
+		double coreW = shellW * 0.35;
+		double coreD = shellD * 0.35;
+		// a translucent glass shell, and a thin solid cyan core in the middle of it (the same spot, a different offset and size)
 		command(rock.level, RockFx.summonBeam(cx - w * 0.35, top, cz - d * 0.35, RockFx.plainState("minecraft:light_blue_stained_glass"),
-				List.of(RockFx.TAG, rock.fxTag, tag), w * 0.7, d * 0.7, BEAM_LENGTH));
+				List.of(RockFx.TAG, rock.fxTag, tag), shellW, shellD, BEAM_LENGTH, 0.0, 0.0));
+		command(rock.level, RockFx.summonBeam(cx - w * 0.35, top, cz - d * 0.35, RockFx.plainState("minecraft:light_blue_concrete"),
+				List.of(RockFx.TAG, rock.fxTag, tag), coreW, coreD, BEAM_LENGTH, (shellW - coreW) / 2.0, (shellD - coreD) / 2.0));
 
 		if (!fxBeamVerified) {
 			// the commands say nothing when they fail: look for what they should have made
@@ -1367,7 +1388,7 @@ public final class FallenRocks {
 		rock.beamDy = rock.dy;
 		double w = rock.box.maxX() - rock.box.minX() + 1;
 		double d = rock.box.maxZ() - rock.box.minZ() + 1;
-		command(rock.level, RockFx.teleport(rock.fxTag + "_beam", rock.box.minX() + w * 0.15, rock.box.maxY() + rock.dy + 1, rock.box.minZ() + d * 0.15));
+		command(rock.level, RockFx.teleportAll(rock.fxTag + "_beam", rock.box.minX() + w * 0.15, rock.box.maxY() + rock.dy + 1, rock.box.minZ() + d * 0.15));
 	}
 
 	/** Removes every golden copy of this rock. */
@@ -1627,8 +1648,15 @@ public final class FallenRocks {
 				fxClear(rock);
 				releaseLift(rock);
 
+				int height = rock.dy;
+
 				if (rock.dy != 0) {
 					shift(rock, 0);
+				}
+
+				// nobody was near: the rock waits on the ground, and falls again from where it was when somebody comes back
+				if (rock.abandoned && height >= 10) {
+					PENDING.put(rock.key, new Pending(rock.level, rock.box, height));
 				}
 
 				if (!rock.intro) {
@@ -1641,14 +1669,22 @@ public final class FallenRocks {
 	}
 
 	/**
-	 * A rock that has just been generated near a player is lifted {@value #INTRO_HEIGHT} blocks up and falls into place, like the ones
-	 * in the sky do (with the blue streak, the crushing and the waves on landing). If nobody is near it stays where it is.
+	 * A rock that has just been generated (or that was loaded again) near a player is lifted up and falls into place, like the
+	 * ones in the sky do (with the blue streak, the crushing and the waves on landing): from {@value #INTRO_HEIGHT} blocks up, or from
+	 * the height it was at when it was put back because nobody was near. If nobody is near it stays where it is.
+	 * Returns whether it started to fall.
 	 */
-	private static void introFall(ServerLevel level, BoundingBox box) {
+	private static boolean introFall(ServerLevel level, BoundingBox box) {
 		long key = BlockPos.asLong(box.minX(), box.minY(), box.minZ());
+		Pending pending = PENDING.get(key);
 
-		if (ACTIVE.containsKey(key) || DEAD.contains(key)) {
-			return;
+		if (DEAD.contains(key)) {
+			PENDING.remove(key);
+			return false;
+		}
+
+		if (ACTIVE.containsKey(key)) {
+			return false;
 		}
 
 		double cx = (box.minX() + box.maxX() + 1) / 2.0;
@@ -1665,20 +1701,58 @@ public final class FallenRocks {
 			}
 		}
 
-		List<Cell> cells = readCells(level, box);
-
-		// only a whole rock falls in; the way above it has been checked to be clear
-		if (!watched || cells.size() != expectedBlocks(box)) {
-			return;
+		if (!watched) {
+			return false;
 		}
 
+		List<Cell> cells = readCells(level, box);
+
+		// only a whole rock falls in
+		if (cells.size() != expectedBlocks(box)) {
+			PENDING.remove(key);
+			return false;
+		}
+
+		// a rock that waited has to have its way up checked again (it was checked when it was generated)
+		if (pending != null && findBlocker(level, box) != null) {
+			PENDING.remove(key);
+			return false;
+		}
+
+		int height = pending != null ? pending.height() : INTRO_HEIGHT;
+		PENDING.remove(key);
 		Rock rock = new Rock(level, box, key, cells);
 		rock.intro = true;
 		rock.phase = Phase.FALLING;
-		rock.total = INTRO_HEIGHT;
+		rock.total = height;
 		ACTIVE.put(key, rock);
-		shift(rock, INTRO_HEIGHT);
+		shift(rock, height);
 		fxBeamOn(rock);
+		return true;
+	}
+
+	/** The rocks that waited on the ground fall again, from the height they were at, once somebody is near them. */
+	private static void processPending() {
+		for (Pending pending : new ArrayList<>(PENDING.values())) {
+			BoundingBox box = pending.box();
+			double cx = (box.minX() + box.maxX() + 1) / 2.0;
+			double cz = (box.minZ() + box.maxZ() + 1) / 2.0;
+			boolean near = false;
+
+			for (ServerPlayer player : pending.level().players()) {
+				double dx = player.getX() - cx;
+				double dz = player.getZ() - cz;
+
+				if (dx * dx + dz * dz < PENDING_RANGE * PENDING_RANGE) {
+					near = true;
+					break;
+				}
+			}
+
+			if (near && pending.level().hasChunkAt(new BlockPos(box.minX(), box.minY(), box.minZ())) && columnsLoaded(pending.level(), box)) {
+				introFall(pending.level(), box);
+			}
+		}
 	}
 
 	/** Returns false when the rock is back on the ground and finished. */
@@ -1699,6 +1773,7 @@ public final class FallenRocks {
 		}
 
 		if (!watched) {
+			rock.abandoned = true;
 			return false;
 		}
 

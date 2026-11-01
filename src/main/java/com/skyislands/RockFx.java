@@ -17,8 +17,6 @@ final class RockFx {
 	static final String TAG = "sky_islands_fx";
 	/** The colour of the glow: a warm gold. */
 	private static final int GOLD = 0xFFD24A;
-	/** The colour of the blue streak behind a falling rock: a bright cyan. */
-	private static final int CYAN = 0x35D9FF;
 	private static final Pattern STATE = Pattern.compile("^Block\\{([^}]*)\\}(?:\\[(.*)\\])?$");
 	private static final String IDENTITY = "left_rotation:[0f,0f,0f,1f],right_rotation:[0f,0f,0f,1f]";
 
@@ -77,10 +75,12 @@ final class RockFx {
 	}
 
 	/**
-	 * Summons the beam of light behind a falling rock: one tall, thin, glowing column of translucent glass. It is an entity, and
-	 * its view range is raised, so it is seen from much further away than a particle can be (as far as the game tracks it).
+	 * Summons one part of the beam of light behind a falling rock: a tall, thin column of a block, as bright as it can be, with
+	 * no outline (an outline would be seen through blocks). The beam is two of these: a translucent glass shell and a thinner,
+	 * solid core inside it. Its view range is raised, so it is seen from much further away than a particle can be.
 	 */
-	static String summonBeam(double x, double y, double z, String blockState, List<String> tags, double width, double depth, double length) {
+	static String summonBeam(double x, double y, double z, String blockState, List<String> tags, double width, double depth, double length,
+			double offsetX, double offsetZ) {
 		StringBuilder list = new StringBuilder();
 
 		for (String tag : tags) {
@@ -92,9 +92,14 @@ final class RockFx {
 		}
 
 		return String.format(Locale.ROOT,
-				"summon minecraft:block_display %.3f %.3f %.3f {block_state:%s,Tags:[%s],Glowing:1b,glow_color_override:%d,brightness:{sky:15,block:15},teleport_duration:1,view_range:2.6f,"
-						+ "transformation:{%s,scale:[%.3ff,%.3ff,%.3ff],translation:[0f,0f,0f]}}",
-				x, y, z, blockState, list, CYAN, IDENTITY, width, length, depth);
+				"summon minecraft:block_display %.3f %.3f %.3f {block_state:%s,Tags:[%s],brightness:{sky:15,block:15},teleport_duration:1,view_range:2.6f,"
+						+ "transformation:{%s,scale:[%.3ff,%.3ff,%.3ff],translation:[%.3ff,0f,%.3ff]}}",
+				x, y, z, blockState, list, IDENTITY, width, length, depth, offsetX, offsetZ);
+	}
+
+	/** Moves every copy with this tag to the same spot (the parts of a beam differ only by their own offset). */
+	static String teleportAll(String tag, double x, double y, double z) {
+		return String.format(Locale.ROOT, "tp @e[type=minecraft:block_display,tag=%s] %.3f %.3f %.3f", tag, x, y, z);
 	}
 
 	static String teleport(String tag, double x, double y, double z) {
