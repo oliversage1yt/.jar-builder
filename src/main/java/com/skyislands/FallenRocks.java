@@ -261,7 +261,7 @@ public final class FallenRocks {
 
 	private static void onGenerate(ServerLevel level, LevelChunk chunk) {
 		if (!disabled && Level.OVERWORLD.equals(level.dimension())) {
-			JUST_GENERATED.add(chunk.getPos().toLong());
+			JUST_GENERATED.add(chunkKey(chunk.getPos()));
 			QUEUE.add(new Generated(level, chunk.getPos(), 0));
 		}
 	}
@@ -295,8 +295,13 @@ public final class FallenRocks {
 		}
 	}
 
+	/** One number for a chunk (its corner block, packed), made from methods every version has. */
+	private static long chunkKey(ChunkPos pos) {
+		return BlockPos.asLong(pos.getMinBlockX(), 0, pos.getMinBlockZ());
+	}
+
 	private static void onLoad(ServerLevel level, LevelChunk chunk, boolean generated) {
-		long pos = chunk.getPos().toLong();
+		long pos = chunkKey(chunk.getPos());
 
 		// the first load of a chunk that was just generated is not a reload
 		if (JUST_GENERATED.remove(pos) || generated || disabled || !Level.OVERWORLD.equals(level.dimension()) || chunk.getAllStarts().isEmpty()) {
